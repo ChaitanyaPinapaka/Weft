@@ -13,7 +13,8 @@ import (
 type Note struct {
 	Path    string
 	Title   string
-	Body    string
+	Body    string   // text content for FTS (tag-stripped is fine)
+	Links   []string // outgoing vault-relative links; caller pre-parses with ParseLinks
 	ModTime time.Time
 	Size    int64
 }
@@ -108,14 +109,13 @@ func (ix *Index) Upsert(n Note) error {
 	if _, err := tx.Exec(`DELETE FROM backlinks WHERE src = ?`, n.Path); err != nil {
 		return err
 	}
-	links := ParseLinks([]byte(n.Body))
-	if len(links) > 0 {
+	if len(n.Links) > 0 {
 		stmt, err := tx.Prepare(`INSERT OR IGNORE INTO backlinks(src,dst) VALUES(?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
-		for _, dst := range links {
+		for _, dst := range n.Links {
 			if dst == n.Path {
 				continue
 			}

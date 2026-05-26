@@ -2,9 +2,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -12,7 +14,12 @@ import (
 	"strings"
 	"time"
 
+	gohtml "golang.org/x/net/html"
+
+	"weft/internal/index"
+	"weft/internal/surface"
 	"weft/internal/vault"
+	"weft/web"
 )
 
 const addr = "localhost:7777"
@@ -23,10 +30,25 @@ func Run(vaultPath string) error {
 		return fmt.Errorf("vault: %w", err)
 	}
 
+	ix, err := index.Open(v.Root)
+	if err != nil {
+		return fmt.Errorf("index: %w", err)
+	}
+	defer ix.Close()
+
+	if err := indexAll(v, ix); err != nil {
+		return fmt.Errorf("initial index: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", listHandler(v))
 	mux.HandleFunc("GET /note/{path...}", noteHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
+	mux.HandleFunc("GET /api/search", searchHandler(ix))
+	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix))
+	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix))
+	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix))
+	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
 	fmt.Printf("Weft  %s\n", url)
@@ -40,7 +62,6 @@ func Run(vaultPath string) error {
 	return http.ListenAndServe(addr, mux)
 }
 
-// listHandler renders the vault browser.
 func listHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		notes, err := v.List()
@@ -60,7 +81,6 @@ func listHandler(v *vault.Vault) http.HandlerFunc {
 	}
 }
 
-// noteHandler serves a raw .html note from the vault.
 func noteHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
@@ -77,7 +97,6 @@ func noteHandler(v *vault.Vault) http.HandlerFunc {
 	}
 }
 
-// apiNotesHandler returns all notes as JSON.
 func apiNotesHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		notes, err := v.List()
@@ -88,6 +107,205 @@ func apiNotesHandler(v *vault.Vault) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(notes)
 	}
+}
+
+func searchHandler(ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/json")
+		if q == "" {
+			json.NewEncoder(w).Encode([]index.Hit{})
+			return
+		}
+		hits, err := ix.Search(q, 20)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(hits)
+	}
+}
+
+// surfaceHandler returns the brain-panel payload: explicit backlinks plus
+// surface.Rank applied across the rest of the vault.
+func surfaceHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cur := r.PathValue("path")
+		if !strings.HasSuffix(cur, ".html") {
+			cur += ".html"
+		}
+
+		notes, err := v.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		back, _ := ix.BacklinksTo(cur)
+		forward, _ := ix.LinksFrom(cur)
+
+		linked := map[string]bool{}
+		for _, p := range back {
+			linked[p] = true
+		}
+		for _, p := range forward {
+			linked[p] = true
+		}
+
+		cands := make([]surface.Candidate, 0, len(notes))
+		for _, n := range notes {
+			cands = append(cands, surface.Candidate{
+				Path:        n.Path,
+				Title:       n.Name,
+				ModTime:     n.ModTime,
+				HasBacklink: linked[n.Path],
+			})
+		}
+		scored := surface.Rank(surface.Candidate{Path: cur}, cands, time.Now())
+		const surfaceLimit = 12
+		if len(scored) > surfaceLimit {
+			scored = scored[:surfaceLimit]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"current":   cur,
+			"backlinks": back,
+			"scored":    scored,
+		})
+	}
+}
+
+func saveHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := v.Write(rel, content); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		title, body := extractTitleBody(content)
+		_ = ix.Upsert(index.Note{
+			Path:    rel,
+			Title:   title,
+			Body:    body,
+			Links:   index.ParseLinks(content),
+			ModTime: time.Now(),
+			Size:    int64(len(content)),
+		})
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func dailyHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel, err := v.EnsureDaily(time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if content, err := v.Read(rel); err == nil {
+			title, body := extractTitleBody(content)
+			_ = ix.Upsert(index.Note{
+				Path:    rel,
+				Title:   title,
+				Body:    body,
+				Links:   index.ParseLinks(content),
+				ModTime: time.Now(),
+				Size:    int64(len(content)),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": rel})
+	}
+}
+
+// indexAll re-indexes the entire vault on startup. Cheap for a personal vault;
+// revisit if note counts climb past a few thousand.
+func indexAll(v *vault.Vault, ix *index.Index) error {
+	notes, err := v.List()
+	if err != nil {
+		return err
+	}
+	for _, n := range notes {
+		content, err := v.Read(n.Path)
+		if err != nil {
+			continue
+		}
+		title, body := extractTitleBody(content)
+		if err := ix.Upsert(index.Note{
+			Path:    n.Path,
+			Title:   title,
+			Body:    body,
+			Links:   index.ParseLinks(content),
+			ModTime: n.ModTime,
+			Size:    n.Size,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extractTitleBody pulls the first <h1> text as the title and a tag-stripped,
+// whitespace-collapsed version of the body for FTS. Falls back to <title>.
+func extractTitleBody(content []byte) (title, body string) {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return "", string(content)
+	}
+	var fallbackTitle string
+	var sb strings.Builder
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode {
+			switch n.Data {
+			case "h1":
+				if title == "" {
+					title = strings.TrimSpace(textOf(n))
+				}
+			case "title":
+				if fallbackTitle == "" {
+					fallbackTitle = strings.TrimSpace(textOf(n))
+				}
+			case "script", "style":
+				return
+			}
+		}
+		if n.Type == gohtml.TextNode {
+			sb.WriteString(n.Data)
+			sb.WriteByte(' ')
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if title == "" {
+		title = fallbackTitle
+	}
+	return title, strings.Join(strings.Fields(sb.String()), " ")
+}
+
+func textOf(n *gohtml.Node) string {
+	var sb strings.Builder
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.TextNode {
+			sb.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return sb.String()
 }
 
 func openBrowser(url string) {
@@ -166,10 +384,19 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .search-wrap {
-    margin-bottom: 24px;
+  header .actions {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
   }
+  header .actions a {
+    font-size: 0.82rem;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  header .actions a:hover { text-decoration: underline; }
+
+  .search-wrap { margin-bottom: 24px; }
   #search {
     width: 100%;
     padding: 9px 14px;
@@ -209,12 +436,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     flex-shrink: 0;
   }
 
-  .empty {
-    color: var(--muted);
-    font-size: 0.9rem;
-    padding: 32px 0;
-    text-align: center;
-  }
+  .empty { color: var(--muted); font-size: 0.9rem; padding: 32px 0; text-align: center; }
   .empty code {
     font-family: ui-monospace, monospace;
     background: var(--border);
@@ -228,6 +450,9 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
   <header>
     <h1>Weft</h1>
     <span class="vault-path">{{.Root}}</span>
+    <span class="actions">
+      <a href="#" id="open-daily">today</a>
+    </span>
   </header>
 
   <div class="search-wrap">
@@ -238,7 +463,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
   <ul class="notes" id="notes-list">
     {{range .Notes}}
     <li class="note-item" data-name="{{.Name}}">
-      <a href="/note/{{.Path}}">{{.Name}}</a>
+      <a href="/web/index.html?path={{.Path}}">{{.Name}}</a>
       <span class="note-date">{{fmtDate .ModTime}}</span>
     </li>
     {{end}}
@@ -258,6 +483,14 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     });
   });
   search.focus();
+
+  document.getElementById('open-daily').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const res = await fetch('/api/daily');
+    if (!res.ok) return;
+    const { path } = await res.json();
+    location.href = '/web/index.html?path=' + encodeURIComponent(path);
+  });
 </script>
 </body>
 </html>`))

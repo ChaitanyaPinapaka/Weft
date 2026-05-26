@@ -68,16 +68,20 @@ func TestUpsertAndSearch(t *testing.T) {
 func TestBacklinksRoundTrip(t *testing.T) {
 	ix := newIndex(t)
 	now := time.Now()
+	srcHTML := `<p>see <a href="target.html">t</a> and <a href="other.html">o</a></p>`
 	if err := ix.Upsert(Note{
 		Path: "src.html", Title: "Src",
-		Body:    `<p>see <a href="target.html">t</a> and <a href="other.html">o</a></p>`,
+		Body:    srcHTML,
+		Links:   ParseLinks([]byte(srcHTML)),
 		ModTime: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	src2HTML := `<a href="target.html">t</a>`
 	if err := ix.Upsert(Note{
 		Path: "src2.html", Title: "Src2",
-		Body:    `<a href="target.html">t</a>`,
+		Body:    src2HTML,
+		Links:   ParseLinks([]byte(src2HTML)),
 		ModTime: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -100,7 +104,7 @@ func TestBacklinksRoundTrip(t *testing.T) {
 	}
 
 	// Re-upserting src with no link to target should remove that backlink.
-	if err := ix.Upsert(Note{Path: "src.html", Title: "Src", Body: `<p>nothing</p>`, ModTime: now}); err != nil {
+	if err := ix.Upsert(Note{Path: "src.html", Title: "Src", Body: `<p>nothing</p>`, Links: nil, ModTime: now}); err != nil {
 		t.Fatal(err)
 	}
 	to, _ = ix.BacklinksTo("target.html")
@@ -112,7 +116,8 @@ func TestBacklinksRoundTrip(t *testing.T) {
 func TestDelete(t *testing.T) {
 	ix := newIndex(t)
 	now := time.Now()
-	_ = ix.Upsert(Note{Path: "x.html", Title: "X", Body: `<a href="y.html">y</a> hello world`, ModTime: now})
+	xHTML := `<a href="y.html">y</a> hello world`
+	_ = ix.Upsert(Note{Path: "x.html", Title: "X", Body: xHTML, Links: ParseLinks([]byte(xHTML)), ModTime: now})
 
 	if err := ix.Delete("x.html"); err != nil {
 		t.Fatal(err)
