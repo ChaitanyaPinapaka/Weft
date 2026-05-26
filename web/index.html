@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Editor</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<div class="shell">
+  <header>
+    <a class="home" href="/">Weft</a>
+    <span class="vault-path" id="path">—</span>
+    <span class="status" id="status" aria-live="polite">idle</span>
+  </header>
+
+  <article class="editor">
+    <h1 id="title" contenteditable="true" spellcheck="true" data-placeholder="Untitled"></h1>
+    <div id="body" class="body" contenteditable="true" spellcheck="true" data-placeholder="Write…"></div>
+  </article>
+</div>
+
+<script src="/web/editor.js" defer></script>
+</body>
+</html>

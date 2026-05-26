@@ -1,0 +1,125 @@
+/* Editor styles — matches the list view's palette and 720px column. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #fafafa;
+  --surface: #ffffff;
+  --border:  #e8e8e8;
+  --text:    #1a1a1a;
+  --muted:   #888;
+  --accent:  #2563eb;
+  --radius:  6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f0f0f;
+    --surface: #1a1a1a;
+    --border:  #2a2a2a;
+    --text:    #e8e8e8;
+    --muted:   #666;
+    --accent:  #60a5fa;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+.shell {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+header .home {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+header .home:hover { color: var(--accent); }
+header .vault-path {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+header .status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+header .status.saving { color: var(--accent); }
+header .status.saved  { color: var(--muted); }
+header .status.offline { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  header .status.offline { color: #ff7a6e; }
+}
+
+.editor h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-bottom: 16px;
+  outline: none;
+  min-height: 2.2rem;
+}
+.editor h1:empty::before,
+.editor .body:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.editor .body {
+  outline: none;
+  font-size: 1rem;
+  min-height: 60vh;
+}
+.editor .body p { margin-bottom: 0.9em; }
+.editor .body h2 { font-size: 1.25rem; margin: 1.2em 0 0.4em; }
+.editor .body h3 { font-size: 1.1rem;  margin: 1.0em 0 0.3em; }
+.editor .body a  { color: var(--accent); }
+.editor .body code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  background: var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.editor .body pre {
+  font-family: ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.editor .body blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+  color: var(--muted);
+  margin: 0.8em 0;
+}
+.editor .body ul, .editor .body ol { padding-left: 1.4em; margin-bottom: 0.9em; }
