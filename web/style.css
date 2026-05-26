@@ -182,6 +182,13 @@ header .vault-path {
   flex: 1;
   min-width: 0;
 }
+header .view-link {
+  font-size: 0.82rem;
+  color: var(--accent);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .view-link:hover { text-decoration: underline; }
 header .status {
   font-size: 0.75rem;
   color: var(--muted);

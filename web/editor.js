@@ -34,6 +34,13 @@
 
   pathEl.textContent = path || '(no path — append ?path=note.html)';
 
+  // View-link mirrors the viewer's edit-link: hidden until we have a path.
+  const viewLinkEl = document.getElementById('view-link');
+  if (path && viewLinkEl) {
+    viewLinkEl.href = '/web/viewer.html?path=' + encodeURIComponent(path);
+    viewLinkEl.hidden = false;
+  }
+
   let saveTimer = null;
   let inflight = false;
   let pending = false;
