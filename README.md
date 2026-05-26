@@ -19,7 +19,7 @@ make build-ort      # → bin/weft with local bge-small embeddings (see Embeddin
 
 ## Embeddings
 
-Semantic surfacing uses `BAAI/bge-small-en-v1.5` via [hugot](https://github.com/knights-analytics/hugot) + ONNX Runtime. The default build ships a stub embedder; `make build-ort` swaps in the real one, which needs two system pieces:
+Semantic surfacing uses `KnightsAnalytics/all-MiniLM-L6-v2` (384-dim, ~22 MB) via [hugot](https://github.com/knights-analytics/hugot) + ONNX Runtime. The default build ships a stub embedder; `make build-ort` swaps in the real one, which needs two system pieces:
 
 ```sh
 # macOS

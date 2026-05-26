@@ -40,7 +40,7 @@ func Run(vaultPath string) error {
 
 	// Embedder is optional. Default builds get the stub (ErrNoORT); we log and
 	// keep running so semantic similarity just stays at 0.
-	emb, embErr := embed.NewBGESmall(filepath.Join(v.Root, ".weft", "models"))
+	emb, embErr := embed.NewLocal(filepath.Join(v.Root, ".weft", "models"))
 	if embErr != nil {
 		fmt.Printf("Note  embeddings disabled: %v\n\n", embErr)
 		emb = nil

@@ -1,8 +1,8 @@
 // Package embed produces dense vector embeddings of note text and serializes
 // them for storage in the index's `embeddings` BLOB column.
 //
-// The real bge-small-en-v1.5 model runs through hugot/onnxruntime and is gated
-// behind the `ORT` build tag (see bge_ort.go). Default builds get a stub
+// The real embedder (all-MiniLM-L6-v2) runs through hugot/onnxruntime and is
+// gated behind the `ORT` build tag (see bge_ort.go). Default builds get a stub
 // (bge_stub.go) so the codebase stays compilable without libonnxruntime.
 package embed
 
@@ -12,8 +12,9 @@ import (
 	"math"
 )
 
-// BGESmallDim is the output dimensionality of bge-small-en-v1.5.
-const BGESmallDim = 384
+// EmbeddingDim is the output dimensionality of the active embedding model
+// (currently all-MiniLM-L6-v2, which is 384-dim; bge-small is also 384).
+const EmbeddingDim = 384
 
 type Embedder interface {
 	Embed(text string) ([]float32, error)

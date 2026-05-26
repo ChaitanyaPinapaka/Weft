@@ -16,18 +16,22 @@ import (
 )
 
 const (
-	bgeRepo = "KnightsAnalytics/bge-small-en-v1.5"
-	bgeDir  = "bge-small-en-v1.5"
+	// modelRepo is the HuggingFace repo we pull. Switched off bge-small to
+	// MiniLM because the KnightsAnalytics bge-small fork is gated and BAAI's
+	// official BGE doesn't ship in hugot's expected layout. MiniLM is hugot's
+	// reference embedding model: public, 384-dim, ~22 MB.
+	modelRepo = "KnightsAnalytics/all-MiniLM-L6-v2"
+	modelDir  = "all-MiniLM-L6-v2"
 )
 
-type bgeSmall struct {
+type localEmbedder struct {
 	mu       sync.Mutex
 	ctx      context.Context
 	session  *hugot.Session
 	pipeline *pipelines.FeatureExtractionPipeline
 }
 
-func NewBGESmall(cacheDir string) (Embedder, error) {
+func NewLocal(cacheDir string) (Embedder, error) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("embed: create cache dir: %w", err)
 	}
@@ -36,8 +40,10 @@ func NewBGESmall(cacheDir string) (Embedder, error) {
 
 	var session *hugot.Session
 	var err error
-	if libPath := findOnnxLib(); libPath != "" {
-		session, err = hugot.NewORTSession(ctx, options.WithOnnxLibraryPath(libPath))
+	if libDir := findOnnxLibDir(); libDir != "" {
+		// Misleadingly named: WithOnnxLibraryPath wants the *directory*
+		// containing libonnxruntime.{so,dylib}, not the file itself.
+		session, err = hugot.NewORTSession(ctx, options.WithOnnxLibraryPath(libDir))
 	} else {
 		session, err = hugot.NewORTSession(ctx)
 	}
@@ -45,19 +51,19 @@ func NewBGESmall(cacheDir string) (Embedder, error) {
 		return nil, fmt.Errorf("embed: new ORT session (is libonnxruntime installed? set WEFT_ONNXRUNTIME_LIB): %w", err)
 	}
 
-	modelPath := filepath.Join(cacheDir, bgeDir)
+	modelPath := filepath.Join(cacheDir, modelDir)
 	if _, statErr := os.Stat(filepath.Join(modelPath, "model.onnx")); os.IsNotExist(statErr) {
-		downloaded, dErr := hugot.DownloadModel(ctx, bgeRepo, cacheDir, hugot.NewDownloadOptions())
+		downloaded, dErr := hugot.DownloadModel(ctx, modelRepo, cacheDir, hugot.NewDownloadOptions())
 		if dErr != nil {
 			_ = session.Destroy()
-			return nil, fmt.Errorf("embed: download %s: %w", bgeRepo, dErr)
+			return nil, fmt.Errorf("embed: download %s: %w", modelRepo, dErr)
 		}
 		modelPath = downloaded
 	}
 
 	cfg := hugot.FeatureExtractionConfig{
 		ModelPath: modelPath,
-		Name:      "weft-bge-small",
+		Name:      "weft-embedder",
 		Options: []backends.PipelineOption[*pipelines.FeatureExtractionPipeline]{
 			pipelines.WithNormalization(),
 		},
@@ -69,10 +75,10 @@ func NewBGESmall(cacheDir string) (Embedder, error) {
 		return nil, fmt.Errorf("embed: build pipeline: %w", err)
 	}
 
-	return &bgeSmall{ctx: ctx, session: session, pipeline: pipe}, nil
+	return &localEmbedder{ctx: ctx, session: session, pipeline: pipe}, nil
 }
 
-func (b *bgeSmall) Embed(text string) ([]float32, error) {
+func (b *localEmbedder) Embed(text string) ([]float32, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -84,15 +90,15 @@ func (b *bgeSmall) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("embed: expected 1 embedding, got %d", len(out.Embeddings))
 	}
 	vec := out.Embeddings[0]
-	if len(vec) != BGESmallDim {
-		return nil, fmt.Errorf("embed: expected dim %d, got %d", BGESmallDim, len(vec))
+	if len(vec) != EmbeddingDim {
+		return nil, fmt.Errorf("embed: expected dim %d, got %d", EmbeddingDim, len(vec))
 	}
 	return vec, nil
 }
 
-func (b *bgeSmall) Dim() int { return BGESmallDim }
+func (b *localEmbedder) Dim() int { return EmbeddingDim }
 
-func (b *bgeSmall) Close() error {
+func (b *localEmbedder) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.session == nil {
@@ -104,10 +110,14 @@ func (b *bgeSmall) Close() error {
 	return err
 }
 
-// findOnnxLib probes the brew + standard install paths. Override with
-// WEFT_ONNXRUNTIME_LIB pointing at the .dylib/.so file.
-func findOnnxLib() string {
+// findOnnxLibDir probes brew + standard install paths and returns the
+// *directory* containing libonnxruntime (what hugot expects). Override with
+// WEFT_ONNXRUNTIME_LIB pointing at either the file or the directory.
+func findOnnxLibDir() string {
 	if p := os.Getenv("WEFT_ONNXRUNTIME_LIB"); p != "" {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return filepath.Dir(p)
+		}
 		return p
 	}
 	for _, p := range []string{
@@ -117,7 +127,7 @@ func findOnnxLib() string {
 		"/usr/local/lib/libonnxruntime.so",
 	} {
 		if _, err := os.Stat(p); err == nil {
-			return p
+			return filepath.Dir(p)
 		}
 	}
 	return ""

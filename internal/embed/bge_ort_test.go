@@ -7,22 +7,22 @@ import (
 	"testing"
 )
 
-// TestBGESmallSmoke loads the real bge-small model, embeds three strings,
-// and asserts the cat/feline pair is more similar than cat/earnings.
-// Gated on WEFT_EMBED_TEST=1 because it needs network + ~30 MB download.
-func TestBGESmallSmoke(t *testing.T) {
+// TestLocalSmoke loads the real local model, embeds three strings, and asserts
+// the cat/feline pair is more similar than cat/earnings.
+// Gated on WEFT_EMBED_TEST=1 because it needs network + ~22 MB download.
+func TestLocalSmoke(t *testing.T) {
 	if os.Getenv("WEFT_EMBED_TEST") != "1" {
-		t.Skip("set WEFT_EMBED_TEST=1 to run (downloads bge-small)")
+		t.Skip("set WEFT_EMBED_TEST=1 to run (downloads embedding model)")
 	}
 	dir := t.TempDir()
-	e, err := NewBGESmall(dir)
+	e, err := NewLocal(dir)
 	if err != nil {
-		t.Fatalf("NewBGESmall: %v", err)
+		t.Fatalf("NewLocal: %v", err)
 	}
 	defer e.Close()
 
-	if e.Dim() != BGESmallDim {
-		t.Fatalf("Dim = %d, want %d", e.Dim(), BGESmallDim)
+	if e.Dim() != EmbeddingDim {
+		t.Fatalf("Dim = %d, want %d", e.Dim(), EmbeddingDim)
 	}
 
 	v1, err := e.Embed("the cat sat on the mat")

@@ -13,9 +13,11 @@ build:
 
 # build-ort enables the real bge-small embedder via ONNX Runtime.
 # Requires: libonnxruntime + libtokenizers.a — see README "Embeddings".
+# CGO_LDFLAGS points at /opt/homebrew/lib for brew-installed libs on Apple Silicon.
 build-ort:
 	@mkdir -p bin
-	go build -tags ORT -o $(BINARY) ./cmd/weft
+	CGO_LDFLAGS="-L/opt/homebrew/lib" \
+		go build -tags ORT -o $(BINARY) ./cmd/weft
 	@echo "built $(BINARY) (ORT enabled)"
 
 test:
