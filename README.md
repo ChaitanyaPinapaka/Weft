@@ -14,8 +14,21 @@ Or build from source:
 
 ```sh
 make build          # → bin/weft
-make deps           # fetch SQLite driver (first time)
+make build-ort      # → bin/weft with local bge-small embeddings (see Embeddings)
 ```
+
+## Embeddings
+
+Semantic surfacing uses `BAAI/bge-small-en-v1.5` via [hugot](https://github.com/knights-analytics/hugot) + ONNX Runtime. The default build ships a stub embedder; `make build-ort` swaps in the real one, which needs two system pieces:
+
+```sh
+# macOS
+brew install onnxruntime
+# then drop libtokenizers.a (from https://github.com/daulet/tokenizers/releases)
+# at /usr/lib/tokenizers.a — or anywhere reachable via CGO_LDFLAGS=-L<dir>
+```
+
+Override the onnxruntime path with `WEFT_ONNXRUNTIME_LIB=/path/to/libonnxruntime.dylib`. The model itself (~30 MB) downloads to `<vault>/.weft/models/` on first daemon start.
 
 ## Usage
 
