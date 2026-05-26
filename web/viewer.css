@@ -141,7 +141,15 @@ header .status.offline { color: #c0392b; }
 .prose ul, .prose ol { padding-left: 1.4em; margin-bottom: 0.9em; }
 .prose img { max-width: 100%; height: auto; }
 
-.brain { font-size: 0.88rem; }
+.brain {
+  font-size: 0.88rem;
+  /* Flex children default to min-width:auto, which lets them grow past their
+     basis when content is wider than the basis. That happens here when a
+     bookmark's slugged path is 120+ chars — without these caps, the panel
+     expands and squishes the reader column to a few characters wide. */
+  min-width: 0;
+  max-width: 280px;
+}
 .brain-section + .brain-section { margin-top: 24px; }
 .brain-heading {
   font-size: 0.7rem;
