@@ -1,0 +1,204 @@
+/* Graph view — force-directed node-link diagram over the vault.
+   Shares the site palette so the chrome reads as part of Weft, not a sidecar.
+   SVG fills the viewport below the header; controls + tooltip float over it. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #fafafa;
+  --surface: #ffffff;
+  --border:  #e8e8e8;
+  --text:    #1a1a1a;
+  --muted:   #888;
+  --accent:  #2563eb;
+  --radius:  6px;
+  --header-h: 56px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f0f0f;
+    --surface: #1a1a1a;
+    --border:  #2a2a2a;
+    --text:    #e8e8e8;
+    --muted:   #666;
+    --accent:  #60a5fa;
+  }
+}
+
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 24px;
+  height: var(--header-h);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+header .home {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+header .home:hover { color: var(--accent); }
+header .vault-path {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+header .status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+header .status.offline { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  header .status.offline { color: #ff7a6e; }
+}
+
+.controls {
+  position: absolute;
+  top: calc(var(--header-h) + 12px);
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+  z-index: 10;
+  font-size: 0.82rem;
+}
+.control { display: flex; align-items: center; gap: 6px; }
+.control-label {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.controls input[type="number"],
+.controls select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  width: 64px;
+}
+.controls select { width: auto; min-width: 90px; }
+.control-btn {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.control-btn:hover { border-color: var(--accent); color: var(--accent); }
+.control-meta {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  margin-left: 4px;
+}
+
+#graph {
+  display: block;
+  width: 100vw;
+  height: calc(100vh - var(--header-h));
+  background: var(--bg);
+  cursor: grab;
+}
+#graph:active { cursor: grabbing; }
+
+/* Edges + nodes — opacity is the primary focus signal so we can dim
+   everything cheaply without re-running the simulation. */
+.edge {
+  stroke: var(--muted);
+  stroke-opacity: 0.25;
+  stroke-width: 1px;
+  pointer-events: none;
+}
+.node {
+  fill: var(--accent);
+  stroke: var(--bg);
+  stroke-width: 1.5px;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.node:hover { stroke: var(--text); stroke-width: 2px; }
+.node.pinned { stroke: var(--text); stroke-dasharray: 2 2; }
+
+/* Focus mode: a class on the <svg> toggles dimming. Highlighted nodes/edges
+   get an explicit class that overrides the dim. CSS-only because re-styling
+   2000 elements through D3 attr is slower than a single class flip. */
+.focused .node, .focused .edge { opacity: 0.1; }
+.focused .node.hl, .focused .edge.hl { opacity: 1; }
+
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  z-index: 20;
+  max-width: 280px;
+}
+.tooltip .tt-title { font-weight: 600; }
+.tooltip .tt-path {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.tooltip .tt-meta {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+  z-index: 5;
+  pointer-events: none;
+}
+.empty.error { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  .empty.error { color: #ff7a6e; }
+}

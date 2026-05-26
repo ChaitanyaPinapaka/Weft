@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/knights-analytics/hugot v0.7.4
+	github.com/yuin/goldmark v1.7.13
 	golang.org/x/net v0.55.0
 	modernc.org/sqlite v1.50.1
 )

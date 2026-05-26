@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Graph</title>
+<link rel="stylesheet" href="/web/graph.css">
+</head>
+<body>
+<header>
+  <a class="home" href="/">Weft</a>
+  <span class="vault-path" id="path">—</span>
+  <span class="status" id="status" aria-live="polite">loading…</span>
+</header>
+
+<div class="controls" id="controls">
+  <label class="control">
+    <span class="control-label">min backlinks</span>
+    <input type="number" id="min-backlinks" min="0" step="1" value="2">
+  </label>
+  <label class="control" id="tag-control" hidden>
+    <span class="control-label">tag</span>
+    <select id="tag-filter">
+      <option value="">all</option>
+    </select>
+  </label>
+  <button type="button" id="reset-zoom" class="control-btn">reset zoom</button>
+  <span class="control-meta" id="meta">—</span>
+</div>
+
+<div class="empty" id="empty" hidden></div>
+
+<svg id="graph" aria-label="Vault graph"></svg>
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+<script type="module" src="/web/graph.js"></script>
+</body>
+</html>

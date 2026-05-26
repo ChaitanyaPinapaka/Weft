@@ -20,6 +20,7 @@ import (
 
 	"weft/internal/clip"
 	"weft/internal/embed"
+	"weft/internal/graph"
 	"weft/internal/index"
 	"weft/internal/surface"
 	"weft/internal/vault"
@@ -71,6 +72,8 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb))
+	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
+	mux.HandleFunc("GET /graph", graphRedirectHandler())
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
@@ -286,6 +289,28 @@ func uniqueClipPath(v *vault.Vault, t time.Time, slug string) string {
 		}
 	}
 	return base
+}
+
+// graphHandler returns the node-link graph of the vault. UI consumes this
+// via web/graph.js (D3 force layout).
+func graphHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		g, err := graph.Build(v, ix)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(g)
+	}
+}
+
+// graphRedirectHandler 302s /graph to the static graph page so the URL is
+// clean (matches /daily's pattern).
+func graphRedirectHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/web/graph.html", http.StatusFound)
+	}
 }
 
 // captureHandler accepts `POST /api/capture` with `{text}` and appends to

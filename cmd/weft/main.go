@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"weft/internal/clip"
+	"weft/internal/imports/applenotes"
+	"weft/internal/imports/bookmarks"
+	"weft/internal/imports/markdown"
+	"weft/internal/imports/notion"
 	"weft/internal/index"
 	"weft/internal/mcp"
 	"weft/internal/server"
@@ -25,6 +29,10 @@ Usage:
   weft capture "<text>"      quick-capture to today's daily note
   weft clip <url>            clip a URL to vault as clips/YYYY-MM-DD-slug.html
   weft mcp <vault-path>      run the MCP server on stdio (for Claude Code)
+  weft import <kind> <src>   import notes from another format into the vault
+                             kinds: markdown notion bookmarks apple-notes
+                             flags: --force (overwrite existing notes)
+                                    -v <vault>
 `
 
 func main() {
@@ -58,6 +66,12 @@ func main() {
 
 	case "mcp":
 		if err := runMCP(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+	case "import":
+		if err := runImport(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -228,6 +242,67 @@ func resolveVault(flag string) string {
 		return "."
 	}
 	return filepath.Join(home, "notes")
+}
+
+// runImport dispatches `weft import <kind> <src> [--force] [-v vault]` to one
+// of the four importer packages. Each importer returns a Report; we surface a
+// summary line per kind.
+func runImport(args []string) error {
+	vaultPath := ""
+	force := false
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "-v", "--vault":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", a)
+			}
+			vaultPath = args[i+1]
+			i++
+		case "--force", "-f":
+			force = true
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) != 2 {
+		return fmt.Errorf("usage: weft import <kind> <src> [--force] [-v <vault>]\n  kinds: markdown notion bookmarks apple-notes")
+	}
+	kind, src := positional[0], positional[1]
+
+	v, err := vault.New(resolveVault(vaultPath))
+	if err != nil {
+		return err
+	}
+
+	var imported, skipped int
+	var errs []error
+	switch kind {
+	case "markdown", "md", "obsidian":
+		r := markdown.Import(src, v, markdown.Options{Force: force, Now: time.Now()})
+		imported, skipped, errs = len(r.Imported), len(r.Skipped), r.Errors
+	case "notion":
+		r := notion.Import(src, v, notion.Options{Force: force})
+		imported, skipped, errs = len(r.Imported), len(r.Skipped), r.Errors
+	case "bookmarks":
+		r := bookmarks.Import(src, v, bookmarks.Options{Force: force})
+		imported, skipped, errs = len(r.Imported), len(r.Skipped), r.Errors
+	case "apple-notes", "applenotes":
+		r := applenotes.Import(src, v, applenotes.Options{Force: force})
+		imported, skipped, errs = len(r.Imported), len(r.Skipped), r.Errors
+	default:
+		return fmt.Errorf("unknown kind %q (want markdown|notion|bookmarks|apple-notes)", kind)
+	}
+
+	fmt.Printf("imported %d, skipped %d, errors %d (vault: %s)\n", imported, skipped, len(errs), v.Root)
+	for _, e := range errs {
+		fmt.Fprintln(os.Stderr, " - ", e)
+	}
+	if imported == 0 && skipped == 0 {
+		return fmt.Errorf("nothing imported — is %s the right source path?", src)
+	}
+	return nil
 }
 
 // uniqueClipPath returns the first clips/YYYY-MM-DD-{slug}.html path that
