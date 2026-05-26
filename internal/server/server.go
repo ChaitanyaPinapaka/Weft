@@ -64,7 +64,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
-	mux.HandleFunc("POST /api/notes/{path...}/rename", renameHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
@@ -202,21 +202,27 @@ func tagHandler(ix *index.Index) http.HandlerFunc {
 	}
 }
 
-// renameHandler accepts `POST /api/notes/{oldPath}/rename` with a JSON body
-// `{"to": "newpath.html"}`. It moves the file, re-indexes both paths, and
-// rewrites any in-vault anchors that pointed at the old path.
+// renameHandler accepts `POST /api/rename` with a JSON body
+// `{"from": "old.html", "to": "new.html"}`. Both paths are vault-relative.
+// Moves the file, re-indexes both paths, and rewrites any in-vault anchors
+// that pointed at the old path.
+//
+// Why both in the body (not in the URL): Go's ServeMux requires `{...}`
+// wildcards at the end of the pattern, which can't express two arbitrary
+// vault-relative paths in one route.
 func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		oldRel := r.PathValue("path")
-		if !strings.HasSuffix(oldRel, ".html") {
-			oldRel += ".html"
-		}
 		var body struct {
-			To string `json:"to"`
+			From string `json:"from"`
+			To   string `json:"to"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 			http.Error(w, "bad JSON body", http.StatusBadRequest)
 			return
+		}
+		oldRel := strings.TrimSpace(body.From)
+		if !strings.HasSuffix(oldRel, ".html") {
+			oldRel += ".html"
 		}
 		newRel := strings.TrimSpace(body.To)
 		if !strings.HasSuffix(newRel, ".html") {
