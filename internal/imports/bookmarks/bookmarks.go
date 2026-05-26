@@ -153,6 +153,16 @@ func slug(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = slugRe.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
+	// Cap at 80 chars — most filesystems max out at 255 bytes per path
+	// segment, and tracking-blob URLs in bookmark titles can blow past that.
+	const maxLen = 80
+	if len(s) > maxLen {
+		s = s[:maxLen]
+		if i := strings.LastIndex(s, "-"); i > maxLen/2 {
+			s = s[:i]
+		}
+		s = strings.TrimRight(s, "-")
+	}
 	return s
 }
 
