@@ -3,5 +3,5 @@ package web
 
 import "embed"
 
-//go:embed index.html editor.js style.css viewer.html viewer.js viewer.css graph.html graph.js graph.css
+//go:embed index.html editor.js style.css viewer.html viewer.js viewer.css graph.html graph.js graph.css tasks.html tasks.js tasks.css
 var FS embed.FS

@@ -1,0 +1,248 @@
+/* Tasks board — three-column Now/Soon/Later. Shares palette with style.css. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #fafafa;
+  --surface: #ffffff;
+  --border:  #e8e8e8;
+  --text:    #1a1a1a;
+  --muted:   #888;
+  --accent:  #2563eb;
+  --radius:  6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f0f0f;
+    --surface: #1a1a1a;
+    --border:  #2a2a2a;
+    --text:    #e8e8e8;
+    --muted:   #666;
+    --accent:  #60a5fa;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px 24px 0;
+}
+header .home {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+header .home:hover { color: var(--accent); }
+header .page-title {
+  font-size: 0.95rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex: 1;
+}
+header .edit-link {
+  font-size: 0.82rem;
+  color: var(--accent);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .edit-link:hover { text-decoration: underline; }
+header .archive-btn {
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+header .archive-btn:hover { border-color: var(--muted); }
+header .archive-btn:disabled { opacity: 0.5; cursor: default; }
+header .status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: right;
+}
+header .status.saving  { color: var(--accent); }
+header .status.saved   { color: var(--muted); }
+header .status.offline { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  header .status.offline { color: #ff7a6e; }
+}
+
+.shell {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+.board {
+  display: flex;
+  flex-direction: row;
+  gap: 32px;
+  align-items: flex-start;
+}
+.board > .column { flex: 1 1 0; min-width: 0; }
+
+@media (max-width: 880px) {
+  .board { flex-direction: column; gap: 24px; }
+}
+
+.column {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 14px 12px;
+}
+.column-heading {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+
+.task-list, .task-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.task-list ul { padding-left: 22px; margin-top: 4px; }
+
+.task-list li {
+  position: relative;
+  padding: 6px 6px 6px 8px;
+  border-radius: 4px;
+  cursor: grab;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.task-list li:hover { background: color-mix(in srgb, var(--border) 35%, transparent); }
+.task-list li.dragging { opacity: 0.5; cursor: grabbing; }
+
+.task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.45;
+}
+.task-row input[type="checkbox"] {
+  margin-top: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.task-row .task-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* Checked rows: muted + struck through, matching brain-style "done" cue. */
+.task-list li.checked > .task-row .task-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* Drop-indicator: a thin accent line above or below a target. Implemented as
+   a ::before/::after on the target li so we don't have to insert/remove a
+   placeholder node during dragover. */
+.task-list li.drop-before::before,
+.task-list li.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.task-list li.drop-before::before { top: -1px; }
+.task-list li.drop-after::after   { bottom: -1px; }
+
+/* Column-level drop target (when hovering empty space at end of list). */
+.task-list.drop-end {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.add-task { margin-top: 8px; }
+.add-btn {
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.add-btn:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.add-form { padding: 4px 0; }
+.add-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  outline: none;
+}
+.add-input:focus { border-color: var(--accent); }
+
+.empty-state {
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--muted);
+}
+.empty-state p { margin-bottom: 16px; }
+.create-btn {
+  font-family: inherit;
+  font-size: 0.9rem;
+  color: var(--surface);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 18px;
+  cursor: pointer;
+}
+.create-btn:hover { filter: brightness(1.05); }
+
+.archive-error {
+  margin-top: 16px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, #c0392b 12%, transparent);
+  color: #c0392b;
+  font-size: 0.85rem;
+}
+@media (prefers-color-scheme: dark) {
+  .archive-error { color: #ff7a6e; background: color-mix(in srgb, #ff7a6e 14%, transparent); }
+}

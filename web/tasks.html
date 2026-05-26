@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Tasks</title>
+<link rel="stylesheet" href="/web/tasks.css">
+</head>
+<body>
+<header>
+  <a class="home" href="/">Weft</a>
+  <span class="page-title">Tasks</span>
+  <a class="edit-link" href="/edit/?path=tasks.html">edit</a>
+  <button type="button" class="archive-btn" id="archive-btn">Archive</button>
+  <span class="status" id="status" aria-live="polite">idle</span>
+</header>
+
+<main class="shell">
+  <div class="board" id="board" hidden>
+    <section class="column" data-col="now">
+      <h2 class="column-heading">Now</h2>
+      <ul class="task-list" id="col-now"></ul>
+      <div class="add-task" data-add="now">
+        <button type="button" class="add-btn">+ Add</button>
+        <form class="add-form" hidden>
+          <input type="text" class="add-input" placeholder="New task" autocomplete="off">
+        </form>
+      </div>
+    </section>
+    <section class="column" data-col="soon">
+      <h2 class="column-heading">Soon</h2>
+      <ul class="task-list" id="col-soon"></ul>
+      <div class="add-task" data-add="soon">
+        <button type="button" class="add-btn">+ Add</button>
+        <form class="add-form" hidden>
+          <input type="text" class="add-input" placeholder="New task" autocomplete="off">
+        </form>
+      </div>
+    </section>
+    <section class="column" data-col="later">
+      <h2 class="column-heading">Later</h2>
+      <ul class="task-list" id="col-later"></ul>
+      <div class="add-task" data-add="later">
+        <button type="button" class="add-btn">+ Add</button>
+        <form class="add-form" hidden>
+          <input type="text" class="add-input" placeholder="New task" autocomplete="off">
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div class="empty-state" id="empty-state" hidden>
+    <p>Create tasks.html to get started.</p>
+    <button type="button" class="create-btn" id="create-btn">Create</button>
+  </div>
+
+  <div class="archive-error" id="archive-error" hidden></div>
+</main>
+
+<script src="/web/tasks.js" defer></script>
+</body>
+</html>
