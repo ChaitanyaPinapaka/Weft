@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	gohtml "golang.org/x/net/html"
 
+	"weft/internal/embed"
 	"weft/internal/index"
 	"weft/internal/surface"
 	"weft/internal/vault"
@@ -36,7 +38,17 @@ func Run(vaultPath string) error {
 	}
 	defer ix.Close()
 
-	if err := indexAll(v, ix); err != nil {
+	// Embedder is optional. Default builds get the stub (ErrNoORT); we log and
+	// keep running so semantic similarity just stays at 0.
+	emb, embErr := embed.NewBGESmall(filepath.Join(v.Root, ".weft", "models"))
+	if embErr != nil {
+		fmt.Printf("Note  embeddings disabled: %v\n\n", embErr)
+		emb = nil
+	} else {
+		defer emb.Close()
+	}
+
+	if err := indexAll(v, ix, emb); err != nil {
 		return fmt.Errorf("initial index: %w", err)
 	}
 
@@ -45,9 +57,9 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /note/{path...}", noteHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
-	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix))
-	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix))
-	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix))
+	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
+	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
@@ -127,8 +139,9 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 }
 
 // surfaceHandler returns the brain-panel payload: explicit backlinks plus
-// surface.Rank applied across the rest of the vault.
-func surfaceHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+// surface.Rank applied across the rest of the vault. When an embedder is
+// available, each candidate's Similarity is filled from cosine(current, c).
+func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cur := r.PathValue("path")
 		if !strings.HasSuffix(cur, ".html") {
@@ -151,6 +164,8 @@ func surfaceHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 			linked[p] = true
 		}
 
+		sims := candidateSimilarities(ix, cur)
+
 		cands := make([]surface.Candidate, 0, len(notes))
 		for _, n := range notes {
 			cands = append(cands, surface.Candidate{
@@ -158,6 +173,7 @@ func surfaceHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 				Title:       n.Name,
 				ModTime:     n.ModTime,
 				HasBacklink: linked[n.Path],
+				Similarity:  float64(sims[n.Path]),
 			})
 		}
 		scored := surface.Rank(surface.Candidate{Path: cur}, cands, time.Now())
@@ -175,7 +191,37 @@ func surfaceHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 	}
 }
 
-func saveHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+// candidateSimilarities returns a map[path]cosine vs the current note's
+// embedding. Returns empty map (not nil) if any precondition fails — callers
+// just read sims[path] and get 0.
+func candidateSimilarities(ix *index.Index, curPath string) map[string]float32 {
+	curBlob, err := ix.GetEmbedding(curPath)
+	if err != nil || curBlob == nil {
+		return map[string]float32{}
+	}
+	curVec, err := embed.Decode(curBlob)
+	if err != nil {
+		return map[string]float32{}
+	}
+	all, err := ix.AllEmbeddings()
+	if err != nil {
+		return map[string]float32{}
+	}
+	out := make(map[string]float32, len(all))
+	for p, blob := range all {
+		if p == curPath {
+			continue
+		}
+		v, err := embed.Decode(blob)
+		if err != nil {
+			continue
+		}
+		out[p] = embed.CosineSimilarity(curVec, v)
+	}
+	return out
+}
+
+func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !strings.HasSuffix(rel, ".html") {
@@ -199,11 +245,12 @@ func saveHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 			ModTime: time.Now(),
 			Size:    int64(len(content)),
 		})
+		updateEmbedding(ix, emb, rel, title+"\n"+body)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func dailyHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel, err := v.EnsureDaily(time.Now())
 		if err != nil {
@@ -220,6 +267,7 @@ func dailyHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 				ModTime: time.Now(),
 				Size:    int64(len(content)),
 			})
+			updateEmbedding(ix, emb, rel, title+"\n"+body)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
@@ -228,7 +276,7 @@ func dailyHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 
 // indexAll re-indexes the entire vault on startup. Cheap for a personal vault;
 // revisit if note counts climb past a few thousand.
-func indexAll(v *vault.Vault, ix *index.Index) error {
+func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 	notes, err := v.List()
 	if err != nil {
 		return err
@@ -249,8 +297,22 @@ func indexAll(v *vault.Vault, ix *index.Index) error {
 		}); err != nil {
 			return err
 		}
+		updateEmbedding(ix, emb, n.Path, title+"\n"+body)
 	}
 	return nil
+}
+
+// updateEmbedding is a no-op when emb is nil. Errors are swallowed: a failed
+// embedding shouldn't fail the surrounding save/index path.
+func updateEmbedding(ix *index.Index, emb embed.Embedder, path, text string) {
+	if emb == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	vec, err := emb.Embed(text)
+	if err != nil {
+		return
+	}
+	_ = ix.UpsertEmbedding(path, embed.Encode(vec))
 }
 
 // extractTitleBody pulls the first <h1> text as the title and a tag-stripped,

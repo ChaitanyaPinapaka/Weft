@@ -185,6 +185,48 @@ func (ix *Index) LinksFrom(path string) ([]string, error) {
 	return ix.queryStrings(`SELECT dst FROM backlinks WHERE src = ? ORDER BY dst`, path)
 }
 
+// UpsertEmbedding stores a serialized vector for path. Embedding format is
+// owned by the embed package (LE float32 blob); index treats it as opaque.
+func (ix *Index) UpsertEmbedding(path string, blob []byte) error {
+	_, err := ix.db.Exec(
+		`INSERT INTO embeddings(path, vec) VALUES(?, ?)
+		 ON CONFLICT(path) DO UPDATE SET vec=excluded.vec`,
+		path, blob,
+	)
+	return err
+}
+
+// GetEmbedding returns the raw blob stored for path, or (nil, nil) if absent.
+func (ix *Index) GetEmbedding(path string) ([]byte, error) {
+	var blob []byte
+	err := ix.db.QueryRow(`SELECT vec FROM embeddings WHERE path = ?`, path).Scan(&blob)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return blob, err
+}
+
+// AllEmbeddings returns every (path, blob) pair currently stored. Used by the
+// surfacer to compute cosine similarity in-process; fine for personal vaults,
+// would need bounding past a few thousand notes.
+func (ix *Index) AllEmbeddings() (map[string][]byte, error) {
+	rows, err := ix.db.Query(`SELECT path, vec FROM embeddings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]byte{}
+	for rows.Next() {
+		var p string
+		var b []byte
+		if err := rows.Scan(&p, &b); err != nil {
+			return nil, err
+		}
+		out[p] = b
+	}
+	return out, rows.Err()
+}
+
 func (ix *Index) queryStrings(q, arg string) ([]string, error) {
 	rows, err := ix.db.Query(q, arg)
 	if err != nil {
