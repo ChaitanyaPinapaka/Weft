@@ -21,7 +21,7 @@
   // Edit-link is hidden until we know we have a path to hand off to the editor.
   const editLinkEl = document.getElementById('edit-link');
   if (path && editLinkEl) {
-    editLinkEl.href = '/web/index.html?path=' + encodeURIComponent(path);
+    editLinkEl.href = '/edit/' + path;
     editLinkEl.hidden = false;
   }
 
@@ -51,7 +51,7 @@
       let tail = '';
       const m = clean.match(/^([^?#]+)(.*)$/);
       if (m) { clean = m[1]; tail = m[2]; }
-      a.setAttribute('href', '/web/viewer.html?path=' + encodeURIComponent(clean) + tail);
+      a.setAttribute('href', '/note/' + clean + tail);
     }
   }
 
@@ -82,7 +82,7 @@
       return;
     }
     try {
-      const res = await fetch('/note/' + path);
+      const res = await fetch('/raw/' + path);
       if (!res.ok) {
         setStatus('offline', 'not found');
         return;
@@ -123,7 +123,7 @@
     for (const p of list) {
       const li = document.createElement('li');
       const a  = document.createElement('a');
-      a.href = '/web/viewer.html?path=' + encodeURIComponent(p);
+      a.href = '/note/' + p;
       a.textContent = titleFromPath(p);
       a.title = p;
       li.appendChild(a);
@@ -145,7 +145,7 @@
       li.className = 'brain-item';
 
       const a = document.createElement('a');
-      a.href = '/web/viewer.html?path=' + encodeURIComponent(it.Path);
+      a.href = '/note/' + it.Path;
 
       const title = document.createElement('span');
       title.className = 'brain-title';
@@ -186,7 +186,7 @@
       li.className = 'brain-item';
 
       const a = document.createElement('a');
-      a.href = '/web/viewer.html?path=' + encodeURIComponent(it.Path);
+      a.href = '/note/' + it.Path;
 
       const title = document.createElement('span');
       title.className = 'brain-title';

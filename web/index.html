@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weft — Editor</title>
+<title>Weft</title>
 <link rel="stylesheet" href="/web/style.css">
 <script>
   // Apply persisted brain-panel state before first paint so the panel doesn't
@@ -26,8 +26,9 @@
 
   <div class="workspace">
     <article class="editor">
-      <h1 id="title" contenteditable="true" spellcheck="true" data-placeholder="Untitled"></h1>
-      <div id="body" class="body" contenteditable="true" spellcheck="true" data-placeholder="Write…"></div>
+      <!-- TipTap mounts here. The H1 lives inside the document like any other
+           block, so there is no separate title field to keep in sync. -->
+      <div id="editor"></div>
     </article>
 
     <aside class="brain" id="brain" aria-label="Brain panel">
@@ -51,6 +52,7 @@
   </div>
 </div>
 
-<script src="/web/editor.js" defer></script>
+<!-- ESM module: imports TipTap from esm.sh. First load needs net; cached after. -->
+<script type="module" src="/web/editor.js"></script>
 </body>
 </html>

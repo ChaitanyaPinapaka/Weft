@@ -1,12 +1,17 @@
 package index
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
+	"golang.org/x/net/html"
 	_ "modernc.org/sqlite"
 )
 
@@ -54,6 +59,12 @@ CREATE TABLE IF NOT EXISTS access_log (
 );
 CREATE INDEX IF NOT EXISTS access_log_path ON access_log(path);
 CREATE INDEX IF NOT EXISTS access_log_ts   ON access_log(ts);
+CREATE TABLE IF NOT EXISTS tags (
+  path TEXT NOT NULL,
+  tag  TEXT NOT NULL,
+  PRIMARY KEY (path, tag)
+);
+CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -162,6 +173,15 @@ func (ix *Index) Upsert(n Note) error {
 		}
 	}
 
+	if _, err := tx.Exec(`DELETE FROM tags WHERE path = ?`, n.Path); err != nil {
+		return err
+	}
+	for _, tag := range ParseTags([]byte(n.Body)) {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO tags(path, tag) VALUES(?, ?)`, n.Path, tag); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -176,6 +196,7 @@ func (ix *Index) Delete(path string) error {
 		`DELETE FROM notes_fts WHERE path = ?`,
 		`DELETE FROM backlinks WHERE src = ?`,
 		`DELETE FROM embeddings WHERE path = ?`,
+		`DELETE FROM tags WHERE path = ?`,
 	} {
 		if _, err := tx.Exec(q, path); err != nil {
 			return err
@@ -311,6 +332,86 @@ func (ix *Index) Stale(path string, fsModTime time.Time) (bool, error) {
 		return false, err
 	}
 	return fsModTime.Unix() > stored, nil
+}
+
+type TagCount struct {
+	Tag   string
+	Count int
+}
+
+// tagRe matches `#tag` only when `#` is at a non-word boundary (\B before #
+// means the char before # is NOT a word char — which is true at SOS or after
+// whitespace/punctuation, false in `foo#bar`). First char must be a letter;
+// 0-30 trailing word/hyphen chars.
+var tagRe = regexp.MustCompile(`\B#([a-zA-Z][a-zA-Z0-9_-]{0,30})\b`)
+
+// ParseTags extracts #tagname tokens from an HTML body. Strips tags first
+// (so the parser doesn't see CSS selectors or `#anchor` href fragments),
+// then matches the tagRe regex over the visible text.
+// Returns lowercased, deduped, sorted.
+func ParseTags(htmlBody []byte) []string {
+	text := stripHTML(htmlBody)
+	matches := tagRe.FindAllStringSubmatch(text, -1)
+	seen := map[string]struct{}{}
+	for _, m := range matches {
+		seen[strings.ToLower(m[1])] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// stripHTML walks the parsed DOM and concatenates text nodes, separating them
+// with spaces so adjacent text in different elements doesn't fuse into a
+// single word. Skips <script> and <style> bodies whose contents are code.
+func stripHTML(htmlBody []byte) string {
+	doc, err := html.Parse(bytes.NewReader(htmlBody))
+	if err != nil {
+		return string(htmlBody)
+	}
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style") {
+			return
+		}
+		if n.Type == html.TextNode {
+			b.WriteString(n.Data)
+			b.WriteByte(' ')
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return b.String()
+}
+
+// AllTags returns every tag in the index with its note count, sorted by
+// count descending, then tag ascending.
+func (ix *Index) AllTags() ([]TagCount, error) {
+	rows, err := ix.db.Query(`SELECT tag, COUNT(*) FROM tags GROUP BY tag ORDER BY COUNT(*) DESC, tag ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TagCount
+	for rows.Next() {
+		var tc TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
+}
+
+// NotesWithTag returns the paths of notes containing tag, sorted ascending.
+func (ix *Index) NotesWithTag(tag string) ([]string, error) {
+	return ix.queryStrings(`SELECT path FROM tags WHERE tag = ? ORDER BY path`, tag)
 }
 
 func (ix *Index) queryStrings(q, arg string) ([]string, error) {

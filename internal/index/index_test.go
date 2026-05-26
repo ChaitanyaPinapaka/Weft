@@ -3,6 +3,7 @@ package index
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -229,6 +230,156 @@ func TestStale(t *testing.T) {
 				t.Fatalf("Stale(%v) = %v, want %v", tc.fs, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseTags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"single", `<p>hello #alpha world</p>`, []string{"alpha"}},
+		{"multiple sorted dedup", `<p>#beta #alpha #beta #gamma</p>`, []string{"alpha", "beta", "gamma"}},
+		{"case insensitive", `<p>#Alpha and #ALPHA and #alpha</p>`, []string{"alpha"}},
+		{"hyphen and digits", `<p>#beta-1 #foo_bar #x9</p>`, []string{"beta-1", "foo_bar", "x9"}},
+		{"length at cap", `<p>#` + strings.Repeat("a", 31) + ` end</p>`, []string{strings.Repeat("a", 31)}},
+		{"over length rejected", `<p>#` + strings.Repeat("a", 40) + ` end</p>`, nil},
+		{"href anchor ignored", `<p>see <a href="#anchor">x</a> and #real</p>`, []string{"real"}},
+		{"non-letter first char", `<p>#1 #-foo #_bar nothing</p>`, nil},
+		{"mid-word", `<p>foo#bar nope</p>`, nil},
+		{"start of string", `#first then text`, []string{"first"}},
+		{"script and style ignored", `<style>#sel { color: red }</style><script>var x = "#nope"</script><p>#yes</p>`, []string{"yes"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseTags([]byte(tc.in))
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ParseTags(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUpsertTags(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	body := `<p>tagged #alpha and #beta-1 and #ALPHA again</p>`
+	if err := ix.Upsert(Note{Path: "n.html", Title: "N", Body: body, ModTime: now}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := ix.NotesWithTag("alpha")
+	if err != nil {
+		t.Fatalf("NotesWithTag alpha: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"n.html"}) {
+		t.Fatalf("alpha paths = %v", got)
+	}
+	got, _ = ix.NotesWithTag("beta-1")
+	if !reflect.DeepEqual(got, []string{"n.html"}) {
+		t.Fatalf("beta-1 paths = %v", got)
+	}
+
+	// Verify only the expected tag set is stored for this note.
+	rows, err := ix.db.Query(`SELECT tag FROM tags WHERE path = ? ORDER BY tag`, "n.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tags []string
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		tags = append(tags, s)
+	}
+	rows.Close()
+	if !reflect.DeepEqual(tags, []string{"alpha", "beta-1"}) {
+		t.Fatalf("stored tags = %v, want [alpha beta-1]", tags)
+	}
+
+	// Re-upsert drops prior tags.
+	if err := ix.Upsert(Note{Path: "n.html", Title: "N", Body: `<p>only #gamma</p>`, ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = ix.db.Query(`SELECT tag FROM tags WHERE path = ? ORDER BY tag`, "n.html")
+	tags = nil
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		tags = append(tags, s)
+	}
+	rows.Close()
+	if !reflect.DeepEqual(tags, []string{"gamma"}) {
+		t.Fatalf("after re-upsert tags = %v, want [gamma]", tags)
+	}
+}
+
+func TestAllTags(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	mustUpsert := func(path, body string) {
+		t.Helper()
+		if err := ix.Upsert(Note{Path: path, Title: path, Body: body, ModTime: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustUpsert("a.html", `<p>#shared #only-a</p>`)
+	mustUpsert("b.html", `<p>#shared #only-b</p>`)
+	mustUpsert("c.html", `<p>#shared</p>`)
+
+	got, err := ix.AllTags()
+	if err != nil {
+		t.Fatalf("AllTags: %v", err)
+	}
+	want := []TagCount{
+		{Tag: "shared", Count: 3},
+		{Tag: "only-a", Count: 1},
+		{Tag: "only-b", Count: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AllTags = %v, want %v", got, want)
+	}
+}
+
+func TestNotesWithTag(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	if err := ix.Upsert(Note{Path: "b.html", Title: "B", Body: `<p>#shared</p>`, ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Upsert(Note{Path: "a.html", Title: "A", Body: `<p>#shared</p>`, ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ix.NotesWithTag("shared")
+	if err != nil {
+		t.Fatalf("NotesWithTag: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"a.html", "b.html"}) {
+		t.Fatalf("NotesWithTag = %v", got)
+	}
+}
+
+func TestDeleteRemovesTags(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	if err := ix.Upsert(Note{Path: "d.html", Title: "D", Body: `<p>#droppable</p>`, ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Delete("d.html"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, _ := ix.AllTags()
+	for _, tc := range got {
+		if tc.Tag == "droppable" {
+			t.Fatalf("AllTags still contains droppable: %v", got)
+		}
+	}
+	paths, _ := ix.NotesWithTag("droppable")
+	if len(paths) != 0 {
+		t.Fatalf("NotesWithTag droppable = %v, want empty", paths)
 	}
 }
 

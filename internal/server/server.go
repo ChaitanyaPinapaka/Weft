@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"weft/internal/index"
 	"weft/internal/surface"
 	"weft/internal/vault"
+	"weft/internal/wiki"
 	"weft/web"
 )
 
@@ -55,15 +57,21 @@ func Run(vaultPath string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", listHandler(v))
 	mux.HandleFunc("GET /note/{path...}", noteHandler(v, ix))
+	mux.HandleFunc("GET /raw/{path...}", rawHandler(v))
+	mux.HandleFunc("GET /edit/{path...}", editRedirectHandler())
+	mux.HandleFunc("GET /daily", dailyRedirectHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/notes/{path...}/rename", renameHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
+	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
+	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
-	dailyURL := url + "/web/viewer.html?path=" + v.DailyPath(time.Now())
+	dailyURL := url + "/note/" + v.DailyPath(time.Now())
 	fmt.Printf("Weft  %s\n", url)
 	fmt.Printf("Vault %s\n", v.Root)
 	fmt.Printf("Daily %s\n\n", dailyURL)
@@ -83,6 +91,15 @@ func listHandler(v *vault.Vault) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Templates are vault residents but not browsing fodder — filter them
+		// out of the list view per v0.3 spec (still reachable by direct URL).
+		filtered := notes[:0]
+		for _, n := range notes {
+			if !vault.IsTemplate(n.Path) {
+				filtered = append(filtered, n)
+			}
+		}
+		notes = filtered
 		sort.Slice(notes, func(i, j int) bool {
 			return notes[i].ModTime.After(notes[j].ModTime)
 		})
@@ -95,7 +112,27 @@ func listHandler(v *vault.Vault) http.HandlerFunc {
 	}
 }
 
+// noteHandler is now the viewer-redirect for /note/{path}. The path also gets
+// logged into the access log so the surface ranker can boost co-accessed notes.
+// Raw HTML is at /raw/{path} (the viewer's xhr target).
 func noteHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		if !v.Exists(rel) {
+			http.Error(w, "note not found", http.StatusNotFound)
+			return
+		}
+		_ = ix.LogAccess(rel, time.Now().Unix())
+		http.Redirect(w, r, "/web/viewer.html?path="+rel, http.StatusFound)
+	}
+}
+
+// rawHandler serves the raw .html bytes — what /note/{path} used to do.
+// Used by viewer.js to fetch the note content; not in the access log.
+func rawHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !strings.HasSuffix(rel, ".html") {
@@ -108,9 +145,156 @@ func noteHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(content)
-		// Append-only access log feeds the co-access boost in surfacing.
-		// Best-effort; a failed log shouldn't poison the response.
-		_ = ix.LogAccess(rel, time.Now().Unix())
+	}
+}
+
+// editRedirectHandler hands /edit/{path} → the editor surface. Doesn't touch
+// the access log: opening for edit doesn't count as a read.
+func editRedirectHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		http.Redirect(w, r, "/web/index.html?path="+rel, http.StatusFound)
+	}
+}
+
+// dailyRedirectHandler ensures today's daily exists (using the template if
+// daily/template.html is present) and 302s to /note/{path}.
+func dailyRedirectHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel, err := v.EnsureDailyFromTemplate(time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/note/"+rel, http.StatusFound)
+	}
+}
+
+func tagsHandler(ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tags, err := ix.AllTags()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tags)
+	}
+}
+
+func tagHandler(ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tag := strings.ToLower(strings.TrimSpace(r.PathValue("tag")))
+		if tag == "" {
+			http.Error(w, "empty tag", http.StatusBadRequest)
+			return
+		}
+		paths, err := ix.NotesWithTag(tag)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(paths)
+	}
+}
+
+// renameHandler accepts `POST /api/notes/{oldPath}/rename` with a JSON body
+// `{"to": "newpath.html"}`. It moves the file, re-indexes both paths, and
+// rewrites any in-vault anchors that pointed at the old path.
+func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		oldRel := r.PathValue("path")
+		if !strings.HasSuffix(oldRel, ".html") {
+			oldRel += ".html"
+		}
+		var body struct {
+			To string `json:"to"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			http.Error(w, "bad JSON body", http.StatusBadRequest)
+			return
+		}
+		newRel := strings.TrimSpace(body.To)
+		if !strings.HasSuffix(newRel, ".html") {
+			newRel += ".html"
+		}
+		if newRel == "" || newRel == oldRel {
+			http.Error(w, "to must differ from source", http.StatusBadRequest)
+			return
+		}
+		if !v.Exists(oldRel) {
+			http.Error(w, "source not found", http.StatusNotFound)
+			return
+		}
+		if v.Exists(newRel) {
+			http.Error(w, "destination exists", http.StatusConflict)
+			return
+		}
+
+		// Move the file: write to new path, then delete the old. The delete
+		// only fires on a successful write, so a failed move leaves the
+		// original untouched (the no-data-loss principle).
+		content, err := v.Read(oldRel)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := v.Write(newRel, content); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := osRemove(v, oldRel); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Index: delete old, upsert new with current text.
+		_ = ix.Delete(oldRel)
+		title, text := extractTitleBody(content)
+		_ = ix.Upsert(index.Note{
+			Path:    newRel,
+			Title:   title,
+			Body:    text,
+			Links:   index.ParseLinks(content),
+			ModTime: time.Now(),
+			Size:    int64(len(content)),
+		})
+		updateEmbedding(ix, emb, newRel, title+"\n"+text)
+
+		// Rewrite any anchors across the vault that pointed at oldRel.
+		notes, _ := v.List()
+		for _, n := range notes {
+			if n.Path == newRel {
+				continue
+			}
+			c, err := v.Read(n.Path)
+			if err != nil {
+				continue
+			}
+			updated, changed := rewriteHrefInDoc(c, oldRel, newRel)
+			if !changed {
+				continue
+			}
+			if err := v.Write(n.Path, updated); err != nil {
+				continue
+			}
+			t, b := extractTitleBody(updated)
+			_ = ix.Upsert(index.Note{
+				Path:    n.Path,
+				Title:   t,
+				Body:    b,
+				Links:   index.ParseLinks(updated),
+				ModTime: time.Now(),
+				Size:    int64(len(updated)),
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"to": newRel})
 	}
 }
 
@@ -258,6 +442,24 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// Expand any raw [[wikilinks]] before persisting. The wiki package
+		// operates on body fragments, so we lift the article inner-HTML out,
+		// expand, and put it back. If anything fails, fall through with the
+		// original bytes — never block a save on link expansion.
+		if inner, ok := articleInnerHTML(content); ok {
+			notes, _ := v.List()
+			paths := make([]string, 0, len(notes))
+			for _, n := range notes {
+				paths = append(paths, n.Path)
+			}
+			if expanded, err := wiki.ExpandWikilinks(inner, paths); err == nil {
+				if rebuilt, ok := replaceArticleInner(content, expanded); ok {
+					content = rebuilt
+				}
+			}
+		}
+
 		if err := v.Write(rel, content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -278,7 +480,7 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 
 func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rel, err := v.EnsureDaily(time.Now())
+		rel, err := v.EnsureDailyFromTemplate(time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -387,6 +589,116 @@ func extractTitleBody(content []byte) (title, body string) {
 		title = fallbackTitle
 	}
 	return title, strings.Join(strings.Fields(sb.String()), " ")
+}
+
+// articleInnerHTML returns the inner HTML of the first <article> element in
+// the document, or false if none. Used to feed wiki.ExpandWikilinks, which
+// expects body-fragment input.
+func articleInnerHTML(content []byte) ([]byte, bool) {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return nil, false
+	}
+	article := findElement(doc, "article")
+	if article == nil {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	for c := article.FirstChild; c != nil; c = c.NextSibling {
+		if err := gohtml.Render(&buf, c); err != nil {
+			return nil, false
+		}
+	}
+	return buf.Bytes(), true
+}
+
+// replaceArticleInner swaps the inner HTML of the first <article> with
+// newInner. Returns the rebuilt full document.
+func replaceArticleInner(content, newInner []byte) ([]byte, bool) {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return nil, false
+	}
+	article := findElement(doc, "article")
+	if article == nil {
+		return nil, false
+	}
+	for c := article.FirstChild; c != nil; {
+		next := c.NextSibling
+		article.RemoveChild(c)
+		c = next
+	}
+	nodes, err := gohtml.ParseFragment(bytes.NewReader(newInner), article)
+	if err != nil {
+		return nil, false
+	}
+	for _, n := range nodes {
+		article.AppendChild(n)
+	}
+	var buf bytes.Buffer
+	if err := gohtml.Render(&buf, doc); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// rewriteHrefInDoc walks the full document and rewrites <a href=oldHref>
+// occurrences to newHref. Returns (rewritten bytes, true) if anything changed.
+func rewriteHrefInDoc(content []byte, oldHref, newHref string) ([]byte, bool) {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return content, false
+	}
+	changed := false
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode && n.Data == "a" {
+			for i, a := range n.Attr {
+				if a.Key == "href" && a.Val == oldHref {
+					n.Attr[i].Val = newHref
+					changed = true
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if !changed {
+		return content, false
+	}
+	var buf bytes.Buffer
+	if err := gohtml.Render(&buf, doc); err != nil {
+		return content, false
+	}
+	return buf.Bytes(), true
+}
+
+func findElement(n *gohtml.Node, tag string) *gohtml.Node {
+	if n.Type == gohtml.ElementNode && n.Data == tag {
+		return n
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if found := findElement(c, tag); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// osRemove deletes a file at the vault-relative path. It mirrors vault.Write's
+// "never escape root" guard so rename can't be tricked into deleting outside
+// the vault.
+func osRemove(v *vault.Vault, rel string) error {
+	if strings.Contains(rel, "..") {
+		return fmt.Errorf("invalid path")
+	}
+	full := filepath.Join(v.Root, filepath.Clean("/"+rel))
+	if !strings.HasPrefix(full, v.Root+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes vault")
+	}
+	return os.Remove(full)
 }
 
 func textOf(n *gohtml.Node) string {
@@ -547,7 +859,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     <h1>Weft</h1>
     <span class="vault-path">{{.Root}}</span>
     <span class="actions">
-      <a href="#" id="open-daily">today</a>
+      <a href="/daily">today</a>
     </span>
   </header>
 
@@ -559,7 +871,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
   <ul class="notes" id="notes-list">
     {{range .Notes}}
     <li class="note-item" data-name="{{.Name}}">
-      <a href="/web/viewer.html?path={{.Path}}">{{.Name}}</a>
+      <a href="/note/{{.Path}}">{{.Name}}</a>
       <span class="note-date">{{fmtDate .ModTime}}</span>
     </li>
     {{end}}
@@ -579,14 +891,6 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     });
   });
   search.focus();
-
-  document.getElementById('open-daily').addEventListener('click', async (e) => {
-    e.preventDefault();
-    const res = await fetch('/api/daily');
-    if (!res.ok) return;
-    const { path } = await res.json();
-    location.href = '/web/viewer.html?path=' + encodeURIComponent(path);
-  });
 </script>
 </body>
 </html>`))
