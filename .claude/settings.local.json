@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod *)",
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'restructure: move to cmd/ + internal/ layout, init go module *)"
+    ]
+  }
+}
