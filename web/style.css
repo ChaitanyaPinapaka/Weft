@@ -58,7 +58,14 @@ body {
   html.brain-collapsed .workspace .brain  { flex: 0 0 auto; }
 }
 
-.brain { font-size: 0.88rem; position: relative; }
+.brain {
+  font-size: 0.88rem;
+  position: relative;
+  /* See viewer.css for the reasoning: pinned width so long surfaced paths
+     don't grow the column and squish the editor. */
+  min-width: 0;
+  max-width: 280px;
+}
 .brain-toggle {
   position: absolute;
   top: -4px;
