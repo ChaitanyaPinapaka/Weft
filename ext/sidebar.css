@@ -1,0 +1,4 @@
+/* Sidebar CSS is inlined inside the closed shadow root in content_script.js
+   so that strict page CSPs cannot block an external <link> load. This file
+   is kept as a reference / future entry-point if we ever move to a build
+   step. It is NOT loaded at runtime. */

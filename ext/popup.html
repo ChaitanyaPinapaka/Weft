@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <form id="capture-form">
+      <label for="text">Capture to today</label>
+      <input id="text" name="text" type="text" autocomplete="off"
+             placeholder="One line; Enter to save" autofocus />
+      <div id="err" class="err" hidden></div>
+      <div class="hint">Posts to localhost:7777/api/capture</div>
+    </form>
+    <script src="popup.js"></script>
+  </body>
+</html>

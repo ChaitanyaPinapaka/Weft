@@ -1,11 +1,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
+	"weft/internal/clip"
+	"weft/internal/index"
+	"weft/internal/mcp"
 	"weft/internal/server"
 	"weft/internal/vault"
 )
@@ -15,7 +23,8 @@ const usage = `Weft — HTML vault with brain memory.
 Usage:
   weft serve <vault-path>    start the daemon and open browser
   weft capture "<text>"      quick-capture to today's daily note
-  weft clip <url>            clip a URL to vault                   (v0.2)
+  weft clip <url>            clip a URL to vault as clips/YYYY-MM-DD-slug.html
+  weft mcp <vault-path>      run the MCP server on stdio (for Claude Code)
 `
 
 func main() {
@@ -37,6 +46,18 @@ func main() {
 
 	case "capture":
 		if err := runCapture(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+	case "clip":
+		if err := runClip(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+	case "mcp":
+		if err := runMCP(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -77,17 +98,7 @@ func runCapture(args []string) error {
 	}
 	text := positional[0]
 
-	if vaultPath == "" {
-		vaultPath = os.Getenv("WEFT_VAULT")
-	}
-	if vaultPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		vaultPath = filepath.Join(home, "notes")
-	}
-
+	vaultPath = resolveVault(vaultPath)
 	v, err := vault.New(vaultPath)
 	if err != nil {
 		return err
@@ -100,4 +111,137 @@ func runCapture(args []string) error {
 
 	fmt.Println(filepath.Join(v.Root, rel))
 	return nil
+}
+
+// runClip fetches a URL, runs it through clip.Clean, and writes it to the
+// vault at clips/YYYY-MM-DD-{slug}.html. Operates directly on the vault — does
+// NOT talk to the daemon, so it works offline / without `weft serve` running.
+//
+// If the slug collides with an existing same-day clip, a -2, -3 suffix is
+// appended until a free slot is found.
+func runClip(args []string) error {
+	vaultPath := ""
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "-v", "--vault":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", a)
+			}
+			vaultPath = args[i+1]
+			i++
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) != 1 {
+		return fmt.Errorf("usage: weft clip <url> [-v <vault>]")
+	}
+	url := positional[0]
+
+	vaultPath = resolveVault(vaultPath)
+	v, err := vault.New(vaultPath)
+	if err != nil {
+		return err
+	}
+
+	// 20 MB cap on the fetched body. Most pages are <2 MB; this leaves head-
+	// room for a long PDF reader page without unbounded memory use.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("fetch: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+
+	cleaned, title, err := clip.Clean(raw, url)
+	if err != nil {
+		return fmt.Errorf("clean: %w", err)
+	}
+
+	rel := uniqueClipPath(v, time.Now(), clip.Slug(title))
+	if err := v.Write(rel, cleaned); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	fmt.Println(filepath.Join(v.Root, rel))
+	return nil
+}
+
+func runMCP(args []string) error {
+	vaultPath := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-v", "--vault":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			vaultPath = args[i+1]
+			i++
+		default:
+			if vaultPath == "" {
+				vaultPath = args[i]
+			}
+		}
+	}
+	vaultPath = resolveVault(vaultPath)
+
+	v, err := vault.New(vaultPath)
+	if err != nil {
+		return err
+	}
+	ix, err := index.Open(v.Root)
+	if err != nil {
+		return fmt.Errorf("index: %w", err)
+	}
+	defer ix.Close()
+
+	// MCP is on stdio; logs go to stderr only. Anything to stdout would
+	// corrupt the JSON-RPC frames.
+	fmt.Fprintf(os.Stderr, "weft mcp: serving %s\n", v.Root)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	srv := mcp.New(v, ix)
+	return srv.Serve(ctx)
+}
+
+// resolveVault picks the vault path from the flag value, the WEFT_VAULT env
+// var, or ~/notes as the final fallback.
+func resolveVault(flag string) string {
+	if flag != "" {
+		return flag
+	}
+	if env := os.Getenv("WEFT_VAULT"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, "notes")
+}
+
+// uniqueClipPath returns the first clips/YYYY-MM-DD-{slug}.html path that
+// doesn't already exist, suffixing -2, -3, … on collision.
+func uniqueClipPath(v *vault.Vault, t time.Time, slug string) string {
+	base := clip.ClipPath(t, slug)
+	if !v.Exists(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := clip.ClipPath(t, fmt.Sprintf("%s-%d", slug, i))
+		if !v.Exists(candidate) {
+			return candidate
+		}
+	}
+	return base // give up; let Write error out
 }

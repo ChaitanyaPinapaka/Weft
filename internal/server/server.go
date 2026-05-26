@@ -18,6 +18,7 @@ import (
 
 	gohtml "golang.org/x/net/html"
 
+	"weft/internal/clip"
 	"weft/internal/embed"
 	"weft/internal/index"
 	"weft/internal/surface"
@@ -68,6 +69,8 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
+	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb))
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
@@ -81,7 +84,25 @@ func Run(vaultPath string) error {
 		openBrowser(url)
 	}()
 
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, withCORS(mux))
+}
+
+// withCORS makes /api/* reachable from the browser extension (origins like
+// `chrome-extension://…` and `moz-extension://…`) and from any local web
+// surface. The daemon is bound to localhost so wide-open CORS is fine here.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func listHandler(v *vault.Vault) http.HandlerFunc {
@@ -199,6 +220,109 @@ func tagHandler(ix *index.Index) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(paths)
+	}
+}
+
+// clipHandler accepts `POST /api/clip` with `{url, html, title}` (title is
+// optional and used as a slug hint; clip.Clean derives one if absent).
+// Browser extension is the primary caller.
+func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL   string `json:"url"`
+			HTML  string `json:"html"`
+			Title string `json:"title"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 20<<20)).Decode(&body); err != nil {
+			http.Error(w, "bad JSON body", http.StatusBadRequest)
+			return
+		}
+		if body.URL == "" || body.HTML == "" {
+			http.Error(w, "url and html are required", http.StatusBadRequest)
+			return
+		}
+		cleaned, title, err := clip.Clean([]byte(body.HTML), body.URL)
+		if err != nil {
+			http.Error(w, "clean: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Caller-provided title wins over what Clean extracted (the extension
+		// has access to the page's DOM <title> directly).
+		if body.Title != "" {
+			title = body.Title
+		}
+		rel := uniqueClipPath(v, time.Now(), clip.Slug(title))
+		if err := v.Write(rel, cleaned); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		t, txt := extractTitleBody(cleaned)
+		_ = ix.Upsert(index.Note{
+			Path:    rel,
+			Title:   t,
+			Body:    txt,
+			Links:   index.ParseLinks(cleaned),
+			ModTime: time.Now(),
+			Size:    int64(len(cleaned)),
+		})
+		updateEmbedding(ix, emb, rel, t+"\n"+txt)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": rel})
+	}
+}
+
+// uniqueClipPath returns the first clips/YYYY-MM-DD-{slug}.html that doesn't
+// already exist, suffixing -2, -3 on collision. Mirrors cmd/weft's helper —
+// fine to duplicate, the alternative is exporting from cmd/.
+func uniqueClipPath(v *vault.Vault, t time.Time, slug string) string {
+	base := clip.ClipPath(t, slug)
+	if !v.Exists(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		c := clip.ClipPath(t, fmt.Sprintf("%s-%d", slug, i))
+		if !v.Exists(c) {
+			return c
+		}
+	}
+	return base
+}
+
+// captureHandler accepts `POST /api/capture` with `{text}` and appends to
+// today's daily note (creating it if missing). Same engine as `weft capture`.
+func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+			http.Error(w, "bad JSON body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Text) == "" {
+			http.Error(w, "text is empty", http.StatusBadRequest)
+			return
+		}
+		rel, err := v.AppendCapture(time.Now(), body.Text)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Re-index the daily note so the new bullet is searchable + embedded.
+		if content, err := v.Read(rel); err == nil {
+			t, txt := extractTitleBody(content)
+			_ = ix.Upsert(index.Note{
+				Path:    rel,
+				Title:   t,
+				Body:    txt,
+				Links:   index.ParseLinks(content),
+				ModTime: time.Now(),
+				Size:    int64(len(content)),
+			})
+			updateEmbedding(ix, emb, rel, t+"\n"+txt)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}
 }
 
