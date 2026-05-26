@@ -6,10 +6,11 @@
 // Why ESM-from-CDN: keeps "one Go binary, no build step" intact. The browser
 // fetches modules from esm.sh on first load and caches them thereafter.
 
-import { Editor }    from 'https://esm.sh/@tiptap/core@2';
+import { Editor, Extension } from 'https://esm.sh/@tiptap/core@2';
 import StarterKit    from 'https://esm.sh/@tiptap/starter-kit@2';
 import Link          from 'https://esm.sh/@tiptap/extension-link@2';
 import Placeholder   from 'https://esm.sh/@tiptap/extension-placeholder@2';
+import Suggestion    from 'https://esm.sh/@tiptap/suggestion@2';
 
 const params = new URLSearchParams(location.search);
 const path = params.get('path') || '';
@@ -67,6 +68,194 @@ function setTitleDirty(isDirty) {
 }
 setTitleDirty(false);
 
+// ---- Wikilink autocomplete ------------------------------------------------
+// One-shot fetch of the vault note list — kept in memory for the lifetime of
+// the page. The dropdown filters this in-memory; we don't re-hit /api/notes
+// per keystroke.
+let notesCache = null;
+let notesPromise = null;
+function loadNotes() {
+  if (notesPromise) return notesPromise;
+  notesPromise = fetch('/api/notes')
+    .then(r => r.ok ? r.json() : [])
+    .then(list => { notesCache = Array.isArray(list) ? list : []; return notesCache; })
+    .catch(() => { notesCache = []; return notesCache; });
+  return notesPromise;
+}
+loadNotes();
+
+// Vanilla dropdown renderer. The Suggestion plugin owns state (range,
+// selectedIndex, items); this just paints and positions DOM. Why no popper
+// lib: coordsAtPos already gives us viewport-relative coords; that's enough
+// for a v0.3 dropdown.
+function createSuggestionUI() {
+  let root = null;
+  let items = [];
+  let selectedIndex = 0;
+  let commandFn = null;
+
+  function ensureRoot() {
+    if (root) return root;
+    root = document.createElement('div');
+    root.className = 'wiki-suggestions';
+    root.hidden = true;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function render() {
+    ensureRoot();
+    root.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'wiki-suggestion is-empty';
+      empty.textContent = 'no matches';
+      root.appendChild(empty);
+      return;
+    }
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'wiki-suggestion' + (i === selectedIndex ? ' is-selected' : '');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = it.Name;
+      const path = document.createElement('span');
+      path.className = 'path';
+      path.textContent = it.Path;
+      row.appendChild(name);
+      row.appendChild(path);
+      // mousedown (not click) so the editor doesn't blur first and cancel.
+      row.addEventListener('mousedown', e => {
+        e.preventDefault();
+        selectedIndex = i;
+        if (commandFn) commandFn(items[i]);
+      });
+      root.appendChild(row);
+    });
+  }
+
+  function position(props) {
+    ensureRoot();
+    const rect = props.clientRect && props.clientRect();
+    if (!rect) return;
+    root.style.top  = (window.scrollY + rect.bottom + 4) + 'px';
+    root.style.left = (window.scrollX + rect.left) + 'px';
+  }
+
+  return {
+    onStart(props) {
+      items = props.items;
+      selectedIndex = 0;
+      commandFn = props.command;
+      ensureRoot();
+      root.hidden = false;
+      render();
+      position(props);
+    },
+    onUpdate(props) {
+      items = props.items;
+      commandFn = props.command;
+      if (selectedIndex >= items.length) selectedIndex = 0;
+      render();
+      position(props);
+    },
+    onKeyDown(props) {
+      const e = props.event;
+      if (e.key === 'ArrowDown') {
+        selectedIndex = (selectedIndex + 1) % Math.max(items.length, 1);
+        render();
+        return true;
+      }
+      if (e.key === 'ArrowUp') {
+        selectedIndex = (selectedIndex - 1 + items.length) % Math.max(items.length, 1);
+        render();
+        return true;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        if (items.length && commandFn) commandFn(items[selectedIndex]);
+        return true;
+      }
+      if (e.key === 'Escape') {
+        if (root) root.hidden = true;
+        return true;
+      }
+      return false;
+    },
+    onExit() {
+      if (root) root.hidden = true;
+      items = [];
+      commandFn = null;
+    },
+  };
+}
+
+// Wikilinks: trigger on the second '[' of '[['. We use the single-char
+// trigger and validate the preceding char in `allow`, because @tiptap/suggestion
+// matches char-by-char and a multi-char trigger isn't first-class.
+const WikilinkSuggestion = Extension.create({
+  name: 'wikilinkSuggestion',
+  addOptions() {
+    return {
+      suggestion: {
+        char: '[',
+        startOfLine: false,
+        allowSpaces: true,
+        // Only fire when the char immediately before our trigger '[' is also
+        // '[' — i.e. the user just completed '[['.
+        allow: ({ state, range }) => {
+          const before = state.doc.textBetween(Math.max(0, range.from - 1), range.from, '\n', '\0');
+          return before === '[';
+        },
+        items: ({ query }) => {
+          const notes = notesCache || [];
+          const q = (query || '').toLowerCase();
+          const filtered = q
+            ? notes.filter(n => (n.Name || '').toLowerCase().includes(q))
+            : notes;
+          return filtered.slice(0, 10);
+        },
+        command: ({ editor, range, props }) => {
+          // `range` covers from the trigger '[' through the typed query. The
+          // first '[' of '[[' sits one position before range.from. If the
+          // user has typed the closing ']]' already, swallow that too so we
+          // don't leave dangling brackets after the anchor.
+          const from = Math.max(0, range.from - 1);
+          let to = range.to;
+          const docSize = editor.state.doc.content.size;
+          const after = editor.state.doc.textBetween(to, Math.min(docSize, to + 2), '\n', '\0');
+          if (after.startsWith(']]')) to += 2;
+
+          const name = props.Name;
+          const href = props.Path;
+          editor.chain()
+            .focus()
+            .insertContentAt({ from, to }, [
+              {
+                type: 'text',
+                text: name,
+                marks: [{ type: 'link', attrs: { href } }],
+              },
+              { type: 'text', text: ' ' },
+            ])
+            .run();
+        },
+        render: () => {
+          const ui = createSuggestionUI();
+          return {
+            onStart:   ui.onStart,
+            onUpdate:  ui.onUpdate,
+            onKeyDown: ui.onKeyDown,
+            onExit:    ui.onExit,
+          };
+        },
+      },
+    };
+  },
+  addProseMirrorPlugins() {
+    return [Suggestion({ editor: this.editor, ...this.options.suggestion })];
+  },
+});
+
 // ---- TipTap ----------------------------------------------------------------
 
 const editor = new Editor({
@@ -87,6 +276,7 @@ const editor = new Editor({
           : 'Write…',
       showOnlyWhenEditable: true,
     }),
+    WikilinkSuggestion,
   ],
   content: '',
   autofocus: false,

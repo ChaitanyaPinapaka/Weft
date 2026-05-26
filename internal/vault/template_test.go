@@ -71,7 +71,7 @@ func TestNewFromTemplateWritesContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := v.NewFromTemplate("templates/meeting.html", "meetings/2026-05-25.html"); err != nil {
+	if err := v.NewFromTemplate("templates/meeting.html", "meetings/2026-05-25.html", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	got, err := v.Read("meetings/2026-05-25.html")
@@ -93,7 +93,7 @@ func TestNewFromTemplateRefusesOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := v.NewFromTemplate("templates/t.html", "dst.html")
+	err := v.NewFromTemplate("templates/t.html", "dst.html", time.Now())
 	if !errors.Is(err, os.ErrExist) {
 		t.Fatalf("want os.ErrExist, got %v", err)
 	}
@@ -111,7 +111,7 @@ func TestNewFromTemplateRefusesDstInTemplates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := v.NewFromTemplate("templates/src.html", "templates/copy.html"); err == nil {
+	if err := v.NewFromTemplate("templates/src.html", "templates/copy.html", time.Now()); err == nil {
 		t.Fatal("expected error when dst is inside templates/, got nil")
 	}
 	if v.Exists("templates/copy.html") {
@@ -180,6 +180,79 @@ func TestEnsureDailyFromTemplateDoesNotOverwrite(t *testing.T) {
 	got, _ := v.Read(rel)
 	if string(got) != existing {
 		t.Fatalf("existing daily was overwritten: %q", got)
+	}
+}
+
+func TestInterpolate(t *testing.T) {
+	when := time.Date(2026, 5, 25, 14, 7, 0, 0, time.UTC) // Monday
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"today", "{{ today }}", "2026-05-25"},
+		{"time", "{{ time }}", "14:07"},
+		{"weekday", "{{ weekday }}", "Monday"},
+		{"year", "{{ year }}", "2026"},
+		{"month", "{{ month }}", "May"},
+		{"day", "{{ day }}", "25"},
+		{"iso", "{{ iso }}", "2026-05-25T14:07:00Z"},
+		{"no-space", "{{today}}", "2026-05-25"},
+		{"extra-space", "{{  today  }}", "2026-05-25"},
+		{"unknown-passthrough", "{{ unknown }}", "{{ unknown }}"},
+		{"empty-token-passthrough", "{{ }}", "{{ }}"},
+		{"no-closing-passthrough", "{{ today", "{{ today"},
+		{"mixed", "<h1>{{ today }}</h1><p>It is {{ weekday }} ({{ year }})</p>",
+			"<h1>2026-05-25</h1><p>It is Monday (2026)</p>"},
+		{"unknown-mixed-with-known", "x={{ today }} y={{ nope }}", "x=2026-05-25 y={{ nope }}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := string(vault.Interpolate([]byte(c.in), when))
+			if got != c.want {
+				t.Errorf("Interpolate(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnsureDailyFromTemplateInterpolates(t *testing.T) {
+	dir := t.TempDir()
+	v, _ := vault.New(dir)
+	const tpl = "<h1>{{ today }}</h1><p>{{ weekday }}</p>"
+	if err := v.Write(vault.DailyTemplatePath, []byte(tpl)); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC) // Monday
+
+	rel, err := v.EnsureDailyFromTemplate(when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v.Read(rel)
+	want := "<h1>2026-05-25</h1><p>Monday</p>"
+	if string(got) != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
+func TestNewFromTemplateInterpolates(t *testing.T) {
+	dir := t.TempDir()
+	v, _ := vault.New(dir)
+	const tpl = "<h1>Meeting on {{ today }}</h1><p>{{ weekday }} at {{ time }}</p>"
+	if err := v.Write("templates/meeting.html", []byte(tpl)); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC) // Monday
+
+	if err := v.NewFromTemplate("templates/meeting.html", "meetings/m.html", when); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v.Read("meetings/m.html")
+	want := "<h1>Meeting on 2026-05-25</h1><p>Monday at 09:30</p>"
+	if string(got) != want {
+		t.Fatalf("want %q, got %q", want, got)
 	}
 }
 

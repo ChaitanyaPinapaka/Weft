@@ -271,3 +271,60 @@ header .status.offline { color: #c0392b; }
   height: 0;
   pointer-events: none;
 }
+
+/* Broken wikilinks — wiki.ExpandWikilinks marks orphans with .wiki-broken.
+   Dotted underline + amber so they're distinguishable from live links at a
+   glance without screaming. */
+.ProseMirror a.wiki-broken {
+  color: #b45309;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  .ProseMirror a.wiki-broken { color: #fbbf24; }
+}
+
+/* Wikilink autocomplete dropdown. Rendered into document.body and positioned
+   absolutely from coordsAtPos(), so it floats over the editor without
+   participating in its layout. */
+.wiki-suggestions {
+  position: absolute;
+  z-index: 50;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  min-width: 280px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+@media (prefers-color-scheme: dark) {
+  .wiki-suggestions { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); }
+}
+.wiki-suggestion {
+  padding: 6px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.wiki-suggestion.is-selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.wiki-suggestion .name { display: block; }
+.wiki-suggestion .path {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-suggestion.is-empty {
+  color: var(--muted);
+  cursor: default;
+}

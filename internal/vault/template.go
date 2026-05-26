@@ -4,10 +4,45 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
+
+var tokenRe = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
+
+var tokenTable = map[string]func(time.Time) string{
+	"today":   func(t time.Time) string { return t.Format("2006-01-02") },
+	"time":    func(t time.Time) string { return t.Format("15:04") },
+	"weekday": func(t time.Time) string { return t.Weekday().String() },
+	"year":    func(t time.Time) string { return t.Format("2006") },
+	"month":   func(t time.Time) string { return t.Format("January") },
+	"day":     func(t time.Time) string { return t.Format("2") },
+	"iso":     func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
+}
+
+// Interpolate substitutes the supported variable tokens in content using t
+// as the date/time source. Unrecognised tokens are left as-is — keep this
+// strictly opt-in so templates can intentionally contain literal "{{ x }}".
+//
+// Whitespace inside the {{ ... }} is tolerated: "{{ today }}", "{{today}}",
+// and "{{  today  }}" all resolve.
+func Interpolate(content []byte, t time.Time) []byte {
+	return tokenRe.ReplaceAllFunc(content, func(match []byte) []byte {
+		sub := tokenRe.FindSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		name := string(sub[1])
+		fn, ok := tokenTable[name]
+		if !ok {
+			// Unknown token: pass through unchanged.
+			return match
+		}
+		return []byte(fn(t))
+	})
+}
 
 // TemplateRoot is the vault-relative directory holding templates.
 const TemplateRoot = "templates"
@@ -68,7 +103,7 @@ func (v *Vault) ListTemplates() ([]Note, error) {
 // overwrite an existing dstRel (returns os.ErrExist). The destination's
 // parent directories are created as needed (Write already does this).
 // Both arguments are vault-relative.
-func (v *Vault) NewFromTemplate(templateRel, dstRel string) error {
+func (v *Vault) NewFromTemplate(templateRel, dstRel string, t time.Time) error {
 	// Templates are sources, not sinks — instantiating back into templates/
 	// would muddy the predicate that excludes them from the main list.
 	if IsTemplate(dstRel) {
@@ -81,7 +116,7 @@ func (v *Vault) NewFromTemplate(templateRel, dstRel string) error {
 	if err != nil {
 		return err
 	}
-	return v.Write(dstRel, content)
+	return v.Write(dstRel, Interpolate(content, t))
 }
 
 // EnsureDailyFromTemplate creates today's daily note. If DailyTemplatePath
@@ -98,7 +133,7 @@ func (v *Vault) EnsureDailyFromTemplate(t time.Time) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := v.Write(rel, content); err != nil {
+		if err := v.Write(rel, Interpolate(content, t)); err != nil {
 			return "", err
 		}
 		return rel, nil
@@ -107,7 +142,7 @@ func (v *Vault) EnsureDailyFromTemplate(t time.Time) (string, error) {
 	// this file may not modify daily.go, and a one-line stub is cheaper than
 	// an indirection that couples the two code paths.
 	stub := "<h1>" + t.Format("2006-01-02") + "</h1>\n"
-	if err := v.Write(rel, []byte(stub)); err != nil {
+	if err := v.Write(rel, Interpolate([]byte(stub), t)); err != nil {
 		return "", err
 	}
 	return rel, nil
