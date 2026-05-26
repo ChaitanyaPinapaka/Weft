@@ -52,9 +52,41 @@ body {
   }
   .workspace .editor { flex: 0 1 720px; min-width: 0; }
   .workspace .brain  { flex: 0 0 280px; position: sticky; top: 48px; }
+  /* When collapsed, give the editor the full column width and center it. */
+  html.brain-collapsed .workspace { justify-content: center; }
+  html.brain-collapsed .workspace .editor { flex: 1 1 720px; max-width: 720px; }
+  html.brain-collapsed .workspace .brain  { flex: 0 0 auto; }
 }
 
-.brain { font-size: 0.88rem; }
+.brain { font-size: 0.88rem; position: relative; }
+.brain-toggle {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  padding: 0;
+}
+.brain-toggle:hover { color: var(--text); border-color: var(--muted); }
+html.brain-collapsed .brain-content { display: none; }
+/* Collapsed: shrink the panel column so the editor can claim the width. */
+html.brain-collapsed .brain {
+  width: 22px;
+  min-width: 22px;
+}
+
+
 .brain-section + .brain-section { margin-top: 24px; }
 .brain-heading {
   font-size: 0.7rem;
@@ -85,6 +117,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.brain-item .brain-sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 2px;
 }
 .brain-item .brain-path {
   display: block;

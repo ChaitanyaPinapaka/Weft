@@ -5,7 +5,6 @@
 package surface
 
 import (
-	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -18,6 +17,7 @@ type Candidate struct {
 	ModTime      time.Time
 	LastAccessed time.Time // zero if never accessed
 	HasBacklink  bool      // true if Candidate.Path links to Current, OR vice versa
+	CoAccessed   bool      // true if recently co-opened with the current note
 	Similarity   float64   // 0..1 cosine, 0 if unknown
 }
 
@@ -29,13 +29,19 @@ type Scored struct {
 	Reasons []string
 }
 
-// Scoring constants. Tuned for the v0.2 brain panel; bump as the corpus grows.
+// Scoring weights per v0.2 spec. Sum of the three primary weights is 1.0;
+// co-access is an additive bonus on top.
 const (
-	backlinkBonus      = 1.0
-	onThisDayWeight    = 0.8
-	recencyWeight      = 0.5
-	recencyHalfLife    = 30.0 // days; exponential decay constant
-	hoursPerDay        = 24.0
+	backlinkWeight  = 0.4
+	semanticWeight  = 0.4
+	recencyWeight   = 0.2
+	coAccessBonus   = 0.1
+	recencyHalfLife = 30.0 // days; exponential decay constant
+	hoursPerDay     = 24.0
+
+	// onThisDayWindowDays is the ±N day tolerance for OnThisDay matching.
+	// Wide enough to absorb travel/holiday note clusters that drift a few days.
+	onThisDayWindowDays = 3
 )
 
 // Rank scores candidates against current at time `now`, sorted desc by Score.
@@ -62,13 +68,13 @@ func score(c Candidate, now time.Time) Scored {
 	s := Scored{Candidate: c}
 
 	if c.HasBacklink {
-		s.Score += backlinkBonus
+		s.Score += backlinkWeight
 		s.Reasons = append(s.Reasons, "backlink")
 	}
 
-	if otd, years, ok := onThisDay(c.ModTime, now); ok {
-		s.Score += otd
-		s.Reasons = append(s.Reasons, fmt.Sprintf("on-this-day:%dy", years))
+	if c.Similarity > 0 {
+		s.Score += semanticWeight * c.Similarity
+		s.Reasons = append(s.Reasons, "semantic")
 	}
 
 	if r := recency(c, now); r > 0 {
@@ -76,31 +82,12 @@ func score(c Candidate, now time.Time) Scored {
 		s.Reasons = append(s.Reasons, "recent")
 	}
 
-	if c.Similarity > 0 {
-		s.Score += c.Similarity
-		s.Reasons = append(s.Reasons, fmt.Sprintf("similar:%.2f", c.Similarity))
+	if c.CoAccessed {
+		s.Score += coAccessBonus
+		s.Reasons = append(s.Reasons, "co-accessed")
 	}
 
 	return s
-}
-
-// onThisDay returns the score contribution and the integer years-ago if the
-// candidate's ModTime falls on the same month+day as `now` in a prior year.
-func onThisDay(mod, now time.Time) (float64, int, bool) {
-	if mod.IsZero() {
-		return 0, 0, false
-	}
-	if mod.Month() != now.Month() || mod.Day() != now.Day() {
-		return 0, 0, false
-	}
-	if mod.Year() == now.Year() {
-		return 0, 0, false
-	}
-	years := now.Year() - mod.Year()
-	if years < 1 {
-		years = 1
-	}
-	return onThisDayWeight / float64(years), years, true
 }
 
 // recency decays exponentially from the most recent of ModTime / LastAccessed.
@@ -118,4 +105,50 @@ func recency(c Candidate, now time.Time) float64 {
 		days = 0
 	}
 	return recencyWeight * math.Exp(-days/recencyHalfLife)
+}
+
+// OnThisDay returns candidates whose ModTime falls within ±3 days of `now`'s
+// month/day in any PRIOR year (different calendar year). Sorted by most recent
+// modification first. Caller is responsible for excluding `current.Path`.
+func OnThisDay(candidates []Candidate, now time.Time) []Candidate {
+	out := make([]Candidate, 0)
+	for _, c := range candidates {
+		if c.ModTime.IsZero() {
+			continue
+		}
+		if c.ModTime.Year() >= now.Year() {
+			// Must be a strictly prior calendar year.
+			continue
+		}
+		if !withinAnniversaryWindow(c.ModTime, now, onThisDayWindowDays) {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ModTime.After(out[j].ModTime)
+	})
+	return out
+}
+
+// withinAnniversaryWindow reports whether mod falls within ±window days of
+// now's month/day, ignoring year. Implemented by shifting mod's year to now's
+// year (and the year before, to handle Dec/Jan wrap) and comparing absolute
+// day deltas.
+func withinAnniversaryWindow(mod, now time.Time, window int) bool {
+	loc := now.Location()
+	anchor := time.Date(now.Year(), mod.Month(), mod.Day(), 0, 0, 0, 0, loc)
+	target := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	// Check current-year anchor and ±1 year anchors to handle wrap near year boundary.
+	for _, shift := range []int{-1, 0, 1} {
+		shifted := anchor.AddDate(shift, 0, 0)
+		days := int(math.Round(target.Sub(shifted).Hours() / hoursPerDay))
+		if days < 0 {
+			days = -days
+		}
+		if days <= window {
+			return true
+		}
+	}
+	return false
 }

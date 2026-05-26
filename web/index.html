@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Weft — Editor</title>
 <link rel="stylesheet" href="/web/style.css">
+<script>
+  // Apply persisted brain-panel state before first paint so the panel doesn't
+  // flash open and then collapse.
+  try {
+    if (localStorage.getItem('weft.brain.collapsed') === '1') {
+      document.documentElement.classList.add('brain-collapsed');
+    }
+  } catch (e) {}
+</script>
 </head>
 <body>
 <div class="shell">
@@ -21,14 +30,22 @@
     </article>
 
     <aside class="brain" id="brain" aria-label="Brain panel">
-      <section class="brain-section" id="brain-backlinks-section">
-        <h2 class="brain-heading">Backlinks</h2>
-        <div class="brain-body" id="brain-backlinks">—</div>
-      </section>
-      <section class="brain-section" id="brain-surfaced-section" hidden>
-        <h2 class="brain-heading">Surfaced</h2>
-        <ul class="brain-list" id="brain-surfaced"></ul>
-      </section>
+      <button type="button" class="brain-toggle" id="brain-toggle"
+              aria-label="Toggle brain panel" aria-expanded="true">›</button>
+      <div class="brain-content" id="brain-content">
+        <section class="brain-section" id="brain-backlinks-section">
+          <h2 class="brain-heading">Backlinks</h2>
+          <div class="brain-body" id="brain-backlinks">—</div>
+        </section>
+        <section class="brain-section" id="brain-surfaced-section" hidden>
+          <h2 class="brain-heading">Surfaced</h2>
+          <ul class="brain-list" id="brain-surfaced"></ul>
+        </section>
+        <section class="brain-section" id="brain-onthisday-section" hidden>
+          <h2 class="brain-heading">On this day</h2>
+          <ul class="brain-list" id="brain-onthisday"></ul>
+        </section>
+      </div>
     </aside>
   </div>
 </div>

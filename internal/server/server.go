@@ -54,7 +54,7 @@ func Run(vaultPath string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", listHandler(v))
-	mux.HandleFunc("GET /note/{path...}", noteHandler(v))
+	mux.HandleFunc("GET /note/{path...}", noteHandler(v, ix))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb))
@@ -63,8 +63,10 @@ func Run(vaultPath string) error {
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
 	url := "http://" + addr
+	dailyURL := url + "/web/viewer.html?path=" + v.DailyPath(time.Now())
 	fmt.Printf("Weft  %s\n", url)
-	fmt.Printf("Vault %s\n\n", v.Root)
+	fmt.Printf("Vault %s\n", v.Root)
+	fmt.Printf("Daily %s\n\n", dailyURL)
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
@@ -93,7 +95,7 @@ func listHandler(v *vault.Vault) http.HandlerFunc {
 	}
 }
 
-func noteHandler(v *vault.Vault) http.HandlerFunc {
+func noteHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !strings.HasSuffix(rel, ".html") {
@@ -106,6 +108,9 @@ func noteHandler(v *vault.Vault) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(content)
+		// Append-only access log feeds the co-access boost in surfacing.
+		// Best-effort; a failed log shouldn't poison the response.
+		_ = ix.LogAccess(rel, time.Now().Unix())
 	}
 }
 
@@ -124,9 +129,8 @@ func apiNotesHandler(v *vault.Vault) http.HandlerFunc {
 func searchHandler(ix *index.Index) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
-		w.Header().Set("Content-Type", "application/json")
 		if q == "" {
-			json.NewEncoder(w).Encode([]index.Hit{})
+			http.Error(w, "empty query", http.StatusBadRequest)
 			return
 		}
 		hits, err := ix.Search(q, 20)
@@ -134,6 +138,7 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(hits)
 	}
 }
@@ -166,6 +171,13 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 
 		sims := candidateSimilarities(ix, cur)
 
+		coAcc := map[string]bool{}
+		if co, err := ix.CoAccessed(cur, 30*time.Minute); err == nil {
+			for _, p := range co {
+				coAcc[p] = true
+			}
+		}
+
 		cands := make([]surface.Candidate, 0, len(notes))
 		for _, n := range notes {
 			cands = append(cands, surface.Candidate{
@@ -173,20 +185,34 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 				Title:       n.Name,
 				ModTime:     n.ModTime,
 				HasBacklink: linked[n.Path],
+				CoAccessed:  coAcc[n.Path],
 				Similarity:  float64(sims[n.Path]),
 			})
 		}
-		scored := surface.Rank(surface.Candidate{Path: cur}, cands, time.Now())
+
+		now := time.Now()
+		scored := surface.Rank(surface.Candidate{Path: cur}, cands, now)
 		const surfaceLimit = 12
 		if len(scored) > surfaceLimit {
 			scored = scored[:surfaceLimit]
 		}
 
+		// OnThisDay is independent of Rank — separate panel section.
+		// Exclude the current note from the prior-year matches.
+		otd := surface.OnThisDay(cands, now)
+		filtered := otd[:0]
+		for _, c := range otd {
+			if c.Path != cur {
+				filtered = append(filtered, c)
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"current":   cur,
-			"backlinks": back,
-			"scored":    scored,
+			"current":     cur,
+			"backlinks":   back,
+			"scored":      scored,
+			"on_this_day": filtered,
 		})
 	}
 }
@@ -274,14 +300,22 @@ func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Hand
 	}
 }
 
-// indexAll re-indexes the entire vault on startup. Cheap for a personal vault;
-// revisit if note counts climb past a few thousand.
+// indexAll incrementally re-indexes the vault on startup. Skips notes whose
+// stored mtime is already up to date (cheap PRAGMA-style mtime check); only
+// re-reads, re-parses, and re-embeds the stale ones.
 func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 	notes, err := v.List()
 	if err != nil {
 		return err
 	}
 	for _, n := range notes {
+		stale, err := ix.Stale(n.Path, n.ModTime)
+		if err != nil {
+			return err
+		}
+		if !stale {
+			continue
+		}
 		content, err := v.Read(n.Path)
 		if err != nil {
 			continue
@@ -525,7 +559,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
   <ul class="notes" id="notes-list">
     {{range .Notes}}
     <li class="note-item" data-name="{{.Name}}">
-      <a href="/web/index.html?path={{.Path}}">{{.Name}}</a>
+      <a href="/web/viewer.html?path={{.Path}}">{{.Name}}</a>
       <span class="note-date">{{fmtDate .ModTime}}</span>
     </li>
     {{end}}
@@ -551,7 +585,7 @@ var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
     const res = await fetch('/api/daily');
     if (!res.ok) return;
     const { path } = await res.json();
-    location.href = '/web/index.html?path=' + encodeURIComponent(path);
+    location.href = '/web/viewer.html?path=' + encodeURIComponent(path);
   });
 </script>
 </body>

@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS embeddings (
   path TEXT PRIMARY KEY,
   vec  BLOB
 );
+CREATE TABLE IF NOT EXISTS access_log (
+  path TEXT NOT NULL,
+  ts   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS access_log_path ON access_log(path);
+CREATE INDEX IF NOT EXISTS access_log_ts   ON access_log(ts);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -74,7 +80,38 @@ func openDSN(dsn string) (*Index, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	// SQLite's ALTER TABLE has no IF NOT EXISTS for columns, so probe PRAGMA
+	// table_info and add `content` only when missing. Lets old DBs upgrade in place.
+	if err := ensureNotesContentColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate notes.content: %w", err)
+	}
 	return &Index{db: db}, nil
+}
+
+func ensureNotesContentColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(notes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "content" {
+			return rows.Close()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE notes ADD COLUMN content TEXT`)
+	return err
 }
 
 func (ix *Index) Close() error {
@@ -89,9 +126,9 @@ func (ix *Index) Upsert(n Note) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(
-		`INSERT INTO notes(path,title,mtime,size) VALUES(?,?,?,?)
-		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, mtime=excluded.mtime, size=excluded.size`,
-		n.Path, n.Title, n.ModTime.Unix(), n.Size,
+		`INSERT INTO notes(path,title,mtime,size,content) VALUES(?,?,?,?,?)
+		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, mtime=excluded.mtime, size=excluded.size, content=excluded.content`,
+		n.Path, n.Title, n.ModTime.Unix(), n.Size, n.Body,
 	); err != nil {
 		return err
 	}
@@ -225,6 +262,55 @@ func (ix *Index) AllEmbeddings() (map[string][]byte, error) {
 		out[p] = b
 	}
 	return out, rows.Err()
+}
+
+// LogAccess records that `path` was opened at unix time `ts`. Append-only;
+// callers may prune by ts later if the table grows.
+func (ix *Index) LogAccess(path string, ts int64) error {
+	_, err := ix.db.Exec(`INSERT INTO access_log(path, ts) VALUES(?, ?)`, path, ts)
+	return err
+}
+
+// CoAccessed returns paths accessed within `window` of any access of `path`
+// (the same surfacing-session heuristic). Excludes `path` itself.
+func (ix *Index) CoAccessed(path string, window time.Duration) ([]string, error) {
+	w := int64(window.Seconds())
+	rows, err := ix.db.Query(
+		`SELECT DISTINCT b.path
+		   FROM access_log a
+		   JOIN access_log b ON b.ts BETWEEN a.ts - ? AND a.ts + ?
+		  WHERE a.path = ? AND b.path <> ?
+		  ORDER BY b.path`,
+		w, w, path, path,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Stale reports whether the on-disk note at `path` (with the given filesystem
+// mtime) is newer than what's in the index. Unknown paths are stale so the
+// startup walker indexes them.
+func (ix *Index) Stale(path string, fsModTime time.Time) (bool, error) {
+	var stored int64
+	err := ix.db.QueryRow(`SELECT mtime FROM notes WHERE path = ?`, path).Scan(&stored)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return fsModTime.Unix() > stored, nil
 }
 
 func (ix *Index) queryStrings(q, arg string) ([]string, error) {

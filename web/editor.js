@@ -13,6 +13,24 @@
   const backlinksEl       = document.getElementById('brain-backlinks');
   const surfacedEl        = document.getElementById('brain-surfaced');
   const surfacedSectionEl = document.getElementById('brain-surfaced-section');
+  const onThisDayEl        = document.getElementById('brain-onthisday');
+  const onThisDaySectionEl = document.getElementById('brain-onthisday-section');
+  const brainToggleEl      = document.getElementById('brain-toggle');
+
+  // Brain panel collapse toggle. Initial state was applied in <head> to avoid
+  // a flash; here we just sync the button glyph and wire the click.
+  const BRAIN_KEY = 'weft.brain.collapsed';
+  function syncBrainToggle() {
+    const collapsed = document.documentElement.classList.contains('brain-collapsed');
+    brainToggleEl.textContent = collapsed ? '‹' : '›';
+    brainToggleEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  brainToggleEl.addEventListener('click', () => {
+    const collapsed = document.documentElement.classList.toggle('brain-collapsed');
+    try { localStorage.setItem(BRAIN_KEY, collapsed ? '1' : '0'); } catch (e) {}
+    syncBrainToggle();
+  });
+  syncBrainToggle();
 
   pathEl.textContent = path || '(no path — append ?path=note.html)';
 
@@ -118,17 +136,31 @@
 
   function chipLabel(reason) {
     // Translate Reasons strings into compact, human chip labels.
-    if (reason === 'backlink') return 'backlink';
-    if (reason === 'recent')   return 'recent';
+    if (reason === 'backlink')    return 'backlink';
+    if (reason === 'semantic')    return 'semantic';
+    if (reason === 'recent')      return 'recent';
+    if (reason === 'co-accessed') return 'co-accessed';
+    // Legacy formats kept so older daemon responses don't break the UI.
     if (reason.startsWith('on-this-day:')) {
-      // "on-this-day:1y" → "1y ago"
       return reason.slice('on-this-day:'.length) + ' ago';
     }
     if (reason.startsWith('similar:')) {
-      // "similar:0.84" → "similar 0.84"
       return 'similar ' + reason.slice('similar:'.length);
     }
     return reason;
+  }
+
+  // "Nyears ago" / "1year ago" — no space, per spec.
+  function yearsAgoLabel(modTime) {
+    if (!modTime) return '';
+    const then = new Date(modTime);
+    if (isNaN(then.getTime())) return '';
+    const now = new Date();
+    let years = now.getFullYear() - then.getFullYear();
+    const m = now.getMonth() - then.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < then.getDate())) years--;
+    if (years < 1) return '';
+    return years + (years === 1 ? 'year ago' : 'years ago');
   }
 
   function renderBacklinks(list) {
@@ -194,10 +226,48 @@
     }
   }
 
+  function renderOnThisDay(items) {
+    onThisDayEl.innerHTML = '';
+    if (!items || items.length === 0) {
+      onThisDaySectionEl.hidden = true;
+      return;
+    }
+    onThisDaySectionEl.hidden = false;
+    for (const it of items.slice(0, 12)) {
+      const li = document.createElement('li');
+      li.className = 'brain-item';
+
+      const a = document.createElement('a');
+      a.href = '?path=' + encodeURIComponent(it.Path);
+
+      const title = document.createElement('span');
+      title.className = 'brain-title';
+      title.textContent = it.Title || titleFromPath(it.Path);
+      a.appendChild(title);
+
+      const sub = yearsAgoLabel(it.ModTime);
+      if (sub) {
+        const subEl = document.createElement('span');
+        subEl.className = 'brain-sub';
+        subEl.textContent = sub;
+        a.appendChild(subEl);
+      }
+
+      const pathSpan = document.createElement('span');
+      pathSpan.className = 'brain-path';
+      pathSpan.textContent = it.Path;
+      a.appendChild(pathSpan);
+
+      li.appendChild(a);
+      onThisDayEl.appendChild(li);
+    }
+  }
+
   async function loadSurface() {
     if (!path) {
       backlinksEl.textContent = '—';
       surfacedSectionEl.hidden = true;
+      onThisDaySectionEl.hidden = true;
       return;
     }
     try {
@@ -206,11 +276,13 @@
       const data = await res.json();
       renderBacklinks(data.backlinks);
       renderSurfaced(data.scored);
+      renderOnThisDay(data.on_this_day);
     } catch (e) {
       // Silent on failure per spec — panel stays a quiet dash.
       backlinksEl.className = 'brain-body';
       backlinksEl.textContent = '—';
       surfacedSectionEl.hidden = true;
+      onThisDaySectionEl.hidden = true;
     }
   }
 

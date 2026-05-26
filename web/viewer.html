@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Viewer</title>
+<link rel="stylesheet" href="/web/viewer.css">
+</head>
+<body>
+<header>
+  <a class="home" href="/">Weft</a>
+  <span class="vault-path" id="path">—</span>
+  <a class="edit-link" id="edit-link" href="#" hidden>edit</a>
+  <span class="status" id="status" aria-live="polite">read-only</span>
+</header>
+
+<main class="shell">
+  <article class="reader">
+    <h1 id="title">—</h1>
+    <div id="prose" class="prose"></div>
+  </article>
+
+  <aside class="brain" id="brain" aria-label="Brain panel">
+    <section class="brain-section" id="brain-backlinks-section">
+      <h2 class="brain-heading">Backlinks</h2>
+      <div class="brain-body" id="brain-backlinks">—</div>
+    </section>
+    <section class="brain-section" id="brain-surfaced-section" hidden>
+      <h2 class="brain-heading">Surfaced</h2>
+      <ul class="brain-list" id="brain-surfaced"></ul>
+    </section>
+    <section class="brain-section" id="brain-onthisday-section" hidden>
+      <h2 class="brain-heading">On this day</h2>
+      <ul class="brain-list" id="brain-onthisday"></ul>
+    </section>
+  </aside>
+</main>
+
+<script src="/web/viewer.js" defer></script>
+</body>
+</html>

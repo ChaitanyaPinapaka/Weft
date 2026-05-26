@@ -1,0 +1,204 @@
+/* Viewer styles — read-only sibling of editor. Same palette + chips so brain
+   panel markup is interchangeable; differs in the reader column (no
+   contenteditable affordances, relaxed prose styling). */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #fafafa;
+  --surface: #ffffff;
+  --border:  #e8e8e8;
+  --text:    #1a1a1a;
+  --muted:   #888;
+  --accent:  #2563eb;
+  --radius:  6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f0f0f;
+    --surface: #1a1a1a;
+    --border:  #2a2a2a;
+    --text:    #e8e8e8;
+    --muted:   #666;
+    --accent:  #60a5fa;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 24px 0;
+}
+header .home {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+header .home:hover { color: var(--accent); }
+header .edit-link {
+  font-size: 0.82rem;
+  color: var(--accent);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .edit-link:hover { text-decoration: underline; }
+header .vault-path {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+header .status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+header .status.offline { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  header .status.offline { color: #ff7a6e; }
+}
+
+.shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+@media (min-width: 980px) {
+  .shell {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 24px;
+  }
+  .shell .reader { flex: 0 1 720px; min-width: 0; }
+  .shell .brain  { flex: 0 0 280px; position: sticky; top: 24px; }
+}
+
+.reader h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-bottom: 16px;
+}
+
+.prose {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+.prose p { margin-bottom: 0.9em; }
+.prose h2 { font-size: 1.25rem; margin: 1.2em 0 0.4em; }
+.prose h3 { font-size: 1.1rem;  margin: 1.0em 0 0.3em; }
+.prose a  { color: var(--accent); }
+.prose code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  background: var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.prose pre {
+  font-family: ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.prose blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+  color: var(--muted);
+  margin: 0.8em 0;
+}
+.prose ul, .prose ol { padding-left: 1.4em; margin-bottom: 0.9em; }
+.prose img { max-width: 100%; height: auto; }
+
+.brain { font-size: 0.88rem; }
+.brain-section + .brain-section { margin-top: 24px; }
+.brain-heading {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.brain-body { color: var(--muted); }
+.brain-list { list-style: none; padding: 0; margin: 0; }
+.brain-item { margin-bottom: 12px; }
+.brain-item a {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+}
+.brain-item a:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.brain-item .brain-title {
+  font-weight: 500;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-item .brain-path {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.brain-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: var(--muted);
+  background: var(--border);
+  padding: 1px 6px;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+.brain-backlinks-list { list-style: none; padding: 0; margin: 0; }
+.brain-backlinks-list li { margin-bottom: 4px; }
+.brain-backlinks-list a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.brain-backlinks-list a:hover { color: var(--accent); }
