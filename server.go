@@ -1,0 +1,263 @@
+// Package server runs the Weft HTTP daemon on localhost:7777.
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"html/template"
+	"net/http"
+	"os/exec"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+
+	"weft/internal/vault"
+)
+
+const addr = "localhost:7777"
+
+func Run(vaultPath string) error {
+	v, err := vault.New(vaultPath)
+	if err != nil {
+		return fmt.Errorf("vault: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", listHandler(v))
+	mux.HandleFunc("GET /note/{path...}", noteHandler(v))
+	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
+
+	url := "http://" + addr
+	fmt.Printf("Weft  %s\n", url)
+	fmt.Printf("Vault %s\n\n", v.Root)
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		openBrowser(url)
+	}()
+
+	return http.ListenAndServe(addr, mux)
+}
+
+// listHandler renders the vault browser.
+func listHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		notes, err := v.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sort.Slice(notes, func(i, j int) bool {
+			return notes[i].ModTime.After(notes[j].ModTime)
+		})
+		if err := listTmpl.Execute(w, map[string]any{
+			"Notes": notes,
+			"Root":  v.Root,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+// noteHandler serves a raw .html note from the vault.
+func noteHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		content, err := v.Read(rel)
+		if err != nil {
+			http.Error(w, "note not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(content)
+	}
+}
+
+// apiNotesHandler returns all notes as JSON.
+func apiNotesHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		notes, err := v.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(notes)
+	}
+}
+
+func openBrowser(url string) {
+	switch runtime.GOOS {
+	case "darwin":
+		exec.Command("open", url).Start()
+	case "linux":
+		exec.Command("xdg-open", url).Start()
+	case "windows":
+		exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	}
+}
+
+var listTmpl = template.Must(template.New("list").Funcs(template.FuncMap{
+	"fmtDate": func(t time.Time) string { return t.Format("Jan 2, 2006") },
+}).Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #fafafa;
+    --surface: #ffffff;
+    --border:  #e8e8e8;
+    --text:    #1a1a1a;
+    --muted:   #888;
+    --accent:  #2563eb;
+    --radius:  6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:      #0f0f0f;
+      --surface: #1a1a1a;
+      --border:  #2a2a2a;
+      --text:    #e8e8e8;
+      --muted:   #666;
+      --accent:  #60a5fa;
+    }
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  .shell {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  header h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  header .vault-path {
+    font-size: 0.78rem;
+    color: var(--muted);
+    font-family: ui-monospace, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .search-wrap {
+    margin-bottom: 24px;
+  }
+  #search {
+    width: 100%;
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.9rem;
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+
+  .notes { list-style: none; }
+  .note-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+  }
+  .note-item:first-child { border-top: 1px solid var(--border); }
+  .note-item a {
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.92rem;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .note-item a:hover { color: var(--accent); }
+  .note-date {
+    font-size: 0.78rem;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .empty {
+    color: var(--muted);
+    font-size: 0.9rem;
+    padding: 32px 0;
+    text-align: center;
+  }
+  .empty code {
+    font-family: ui-monospace, monospace;
+    background: var(--border);
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <h1>Weft</h1>
+    <span class="vault-path">{{.Root}}</span>
+  </header>
+
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Filter notes…" autocomplete="off">
+  </div>
+
+  {{if .Notes}}
+  <ul class="notes" id="notes-list">
+    {{range .Notes}}
+    <li class="note-item" data-name="{{.Name}}">
+      <a href="/note/{{.Path}}">{{.Name}}</a>
+      <span class="note-date">{{fmtDate .ModTime}}</span>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty">No notes yet — add <code>.html</code> files to your vault.</p>
+  {{end}}
+</div>
+
+<script>
+  const search = document.getElementById('search');
+  const items  = document.querySelectorAll('.note-item');
+  search.addEventListener('input', () => {
+    const q = search.value.toLowerCase();
+    items.forEach(el => {
+      el.hidden = q && !el.dataset.name.toLowerCase().includes(q);
+    });
+  });
+  search.focus();
+</script>
+</body>
+</html>`))

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to Weft</title>
+<style>
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    max-width: 680px;
+    margin: 60px auto;
+    padding: 0 24px 80px;
+    color: #1a1a1a;
+    line-height: 1.7;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f0f0f; color: #e8e8e8; }
+    a { color: #60a5fa; }
+    code { background: #1a1a1a; }
+  }
+  h1 { font-size: 1.6rem; margin-bottom: 8px; letter-spacing: -0.02em; }
+  code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.875em;
+    background: #f0f0f0;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>Welcome to Weft</h1>
+
+<p>Your vault is a folder of <code>.html</code> files. This is one of them.</p>
+
+<p>
+  Notes are plain <code>.html</code> on disk — portable, future-proof, and
+  already web pages. Open any note in a browser tab and it just works.
+</p>
+
+<p>
+  Link between notes with standard anchors:
+  <a href="welcome.html">← this note</a>.
+  Weft parses <code>&lt;a href&gt;</code> tags on save to build backlinks automatically.
+</p>
+
+<h2 style="margin-top:32px;font-size:1.1rem">Getting started</h2>
+<ol style="padding-left:20px">
+  <li>Add <code>.html</code> files to your vault folder — they appear in the browser instantly.</li>
+  <li>Create a daily note at <code>daily/YYYY-MM-DD.html</code> for quick capture.</li>
+  <li>Link freely. The brain panel (v0.2) will surface related notes automatically.</li>
+</ol>
+</body>
+</html>
