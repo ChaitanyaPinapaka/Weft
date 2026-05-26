@@ -106,6 +106,10 @@ header .status.offline { color: #c0392b; }
 .prose {
   font-size: 1rem;
   line-height: 1.6;
+  /* Long unbreakable URLs/tokens shouldn't blow out the column and overlap
+     the brain panel. `overflow-wrap: anywhere` breaks at any character when
+     a word would otherwise overflow. */
+  overflow-wrap: anywhere;
 }
 .prose p { margin-bottom: 0.9em; }
 .prose h2 { font-size: 1.25rem; margin: 1.2em 0 0.4em; }
