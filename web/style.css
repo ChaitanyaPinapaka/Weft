@@ -32,10 +32,93 @@ body {
 }
 
 .shell {
-  max-width: 720px;
+  /* Wider on big screens so the brain panel can sit beside the 720px editor
+     without crushing it. The .workspace below caps the editor's width. */
+  max-width: 1080px;
   margin: 0 auto;
   padding: 48px 24px 80px;
 }
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+@media (min-width: 980px) {
+  .workspace {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 24px;
+  }
+  .workspace .editor { flex: 0 1 720px; min-width: 0; }
+  .workspace .brain  { flex: 0 0 280px; position: sticky; top: 48px; }
+}
+
+.brain { font-size: 0.88rem; }
+.brain-section + .brain-section { margin-top: 24px; }
+.brain-heading {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.brain-body { color: var(--muted); }
+.brain-list { list-style: none; padding: 0; margin: 0; }
+.brain-item { margin-bottom: 12px; }
+.brain-item a {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+}
+.brain-item a:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.brain-item .brain-title {
+  font-weight: 500;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-item .brain-path {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.brain-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: var(--muted);
+  background: var(--border);
+  padding: 1px 6px;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+.brain-backlinks-list { list-style: none; padding: 0; margin: 0; }
+.brain-backlinks-list li { margin-bottom: 4px; }
+.brain-backlinks-list a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.brain-backlinks-list a:hover { color: var(--accent); }
 
 header {
   display: flex;

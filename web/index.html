@@ -14,10 +14,23 @@
     <span class="status" id="status" aria-live="polite">idle</span>
   </header>
 
-  <article class="editor">
-    <h1 id="title" contenteditable="true" spellcheck="true" data-placeholder="Untitled"></h1>
-    <div id="body" class="body" contenteditable="true" spellcheck="true" data-placeholder="Write…"></div>
-  </article>
+  <div class="workspace">
+    <article class="editor">
+      <h1 id="title" contenteditable="true" spellcheck="true" data-placeholder="Untitled"></h1>
+      <div id="body" class="body" contenteditable="true" spellcheck="true" data-placeholder="Write…"></div>
+    </article>
+
+    <aside class="brain" id="brain" aria-label="Brain panel">
+      <section class="brain-section" id="brain-backlinks-section">
+        <h2 class="brain-heading">Backlinks</h2>
+        <div class="brain-body" id="brain-backlinks">—</div>
+      </section>
+      <section class="brain-section" id="brain-surfaced-section" hidden>
+        <h2 class="brain-heading">Surfaced</h2>
+        <ul class="brain-list" id="brain-surfaced"></ul>
+      </section>
+    </aside>
+  </div>
 </div>
 
 <script src="/web/editor.js" defer></script>
