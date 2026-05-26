@@ -197,15 +197,18 @@ const WikilinkSuggestion = Extension.create({
   addOptions() {
     return {
       suggestion: {
-        char: '[',
+        // Two-char trigger: @tiptap/suggestion's escapeForRegEx treats the
+        // string literally in its match regex, so '[[' works directly. With a
+        // single-char '[' trigger the second bracket gets eaten into the
+        // query instead of starting a fresh match, which is why nothing
+        // surfaced before the fix.
+        char: '[[',
         startOfLine: false,
         allowSpaces: true,
-        // Only fire when the char immediately before our trigger '[' is also
-        // '[' — i.e. the user just completed '[['.
-        allow: ({ state, range }) => {
-          const before = state.doc.textBetween(Math.max(0, range.from - 1), range.from, '\n', '\0');
-          return before === '[';
-        },
+        // Default allowedPrefixes is [' '] which means a [[ at the start of
+        // a paragraph (after a block boundary, not whitespace) won't trigger.
+        // Null disables the prefix check entirely.
+        allowedPrefixes: null,
         items: ({ query }) => {
           const notes = notesCache || [];
           const q = (query || '').toLowerCase();
@@ -215,11 +218,10 @@ const WikilinkSuggestion = Extension.create({
           return filtered.slice(0, 10);
         },
         command: ({ editor, range, props }) => {
-          // `range` covers from the trigger '[' through the typed query. The
-          // first '[' of '[[' sits one position before range.from. If the
+          // `range.from` is at the first '['; range.to is the cursor. If the
           // user has typed the closing ']]' already, swallow that too so we
           // don't leave dangling brackets after the anchor.
-          const from = Math.max(0, range.from - 1);
+          const from = range.from;
           let to = range.to;
           const docSize = editor.state.doc.content.size;
           const after = editor.state.doc.textBetween(to, Math.min(docSize, to + 2), '\n', '\0');
