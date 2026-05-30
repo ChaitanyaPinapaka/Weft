@@ -35,14 +35,23 @@ func New(root string) (*Vault, error) {
 	return &Vault{Root: abs}, nil
 }
 
-// List returns all .html notes in the vault, walking sub-directories.
+// List returns all .html notes in the vault, walking sub-directories. The
+// internal .weft directory and the .trash directory (deleted notes, kept for
+// the never-delete invariant) are skipped — neither should surface, index, or
+// re-sync.
 func (v *Vault) List() ([]Note, error) {
 	var notes []Note
 	err := filepath.WalkDir(v.Root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".html") {
+		if d.IsDir() {
+			if name := d.Name(); (name == ".weft" || name == ".trash") && path != v.Root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".html") {
 			return nil
 		}
 		rel, _ := filepath.Rel(v.Root, path)
@@ -127,6 +136,24 @@ func (v *Vault) Write(rel string, content []byte) error {
 func (v *Vault) Exists(rel string) bool {
 	_, err := os.Stat(v.abs(rel))
 	return err == nil
+}
+
+// Trash moves a note into the vault's .trash directory, preserving its bytes —
+// the system never hard-deletes (the never-delete invariant). A no-op if the
+// source is already gone. Any prior trash entry at the same relative path is
+// overwritten. .trash is excluded from List, so trashed notes don't surface,
+// index, or re-sync, but the bytes remain recoverable on disk.
+func (v *Vault) Trash(rel string) error {
+	src := v.abs(rel)
+	if _, err := os.Stat(src); err != nil {
+		return nil // already gone
+	}
+	dst := v.abs(filepath.Join(".trash", rel))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(dst)
+	return os.Rename(src, dst)
 }
 
 func (v *Vault) abs(rel string) string {

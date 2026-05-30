@@ -3,6 +3,7 @@ package sync
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -166,6 +167,65 @@ func Open(v *vault.Vault, passphrase string) (*Engine, error) {
 func Configured(v *vault.Vault) bool {
 	_, err := os.Stat(filepath.Join(syncDir(v), configName))
 	return err == nil
+}
+
+// LoadConfig reads a vault's saved sync config.
+func LoadConfig(v *vault.Vault) (Config, error) {
+	var cfg Config
+	cb, err := os.ReadFile(filepath.Join(syncDir(v), configName))
+	if err != nil {
+		return cfg, errors.New("sync is not configured")
+	}
+	return cfg, json.Unmarshal(cb, &cfg)
+}
+
+// CheckConfig verifies the backend end-to-end with a probe object
+// (put → get → head → list → delete), confirming credentials + connectivity
+// without touching vault data. Run it against a real bucket before trusting
+// sync. The probe lives under a _weftcheck/ prefix and is cleaned up.
+func CheckConfig(cfg Config) error {
+	be, err := cfg.backend()
+	if err != nil {
+		return err
+	}
+	const key = "_weftcheck/probe"
+	payload := []byte("weft round-trip probe")
+
+	if err := be.Put(key, payload); err != nil {
+		return fmt.Errorf("put: %w", err)
+	}
+	got, err := be.Get(key)
+	if err != nil {
+		return fmt.Errorf("get: %w", err)
+	}
+	if string(got) != string(payload) {
+		return fmt.Errorf("get returned %d bytes, expected %d", len(got), len(payload))
+	}
+	if ok, err := be.Head(key); err != nil {
+		return fmt.Errorf("head: %w", err)
+	} else if !ok {
+		return errors.New("head: probe not found after put")
+	}
+	keys, err := be.List("_weftcheck/")
+	if err != nil {
+		return fmt.Errorf("list: %w", err)
+	}
+	found := false
+	for _, k := range keys {
+		if k == key {
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("list: probe not listed under its prefix")
+	}
+	if err := be.Delete(key); err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
+	if ok, _ := be.Head(key); ok {
+		return errors.New("delete: probe still present")
+	}
+	return nil
 }
 
 func writeConfig(dir string, cfg Config, keyfile []byte) error {

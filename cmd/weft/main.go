@@ -36,6 +36,7 @@ Usage:
                                     -v <vault>
   weft sync init             set up E2EE multi-device sync on your own cloud
   weft sync join             enroll this device into an existing synced vault
+  weft sync check            verify bucket creds + connectivity (no data touched)
   weft sync                  run one convergence cycle (push + pull)
                              flags: -v <vault> --passphrase <p>
                                     --provider {r2|aws|minio|b2|fs} --bucket --endpoint
@@ -323,7 +324,7 @@ func runImport(args []string) error {
 // from --passphrase or the WEFT_PASSPHRASE env var.
 func runSync(args []string) error {
 	sub := ""
-	if len(args) > 0 && (args[0] == "init" || args[0] == "join") {
+	if len(args) > 0 && (args[0] == "init" || args[0] == "join" || args[0] == "check") {
 		sub, args = args[0], args[1:]
 	}
 
@@ -371,6 +372,22 @@ func runSync(args []string) error {
 	v, err := vault.New(resolveVault(vaultPath))
 	if err != nil {
 		return err
+	}
+
+	// `check` verifies the backend round-trip (creds + connectivity), no key needed.
+	if sub == "check" {
+		if cfg.Provider == "" { // fall back to the vault's saved config
+			if saved, lerr := syncpkg.LoadConfig(v); lerr == nil {
+				cfg = saved
+			} else {
+				return lerr
+			}
+		}
+		if err := syncpkg.CheckConfig(cfg); err != nil {
+			return fmt.Errorf("backend check failed: %w", err)
+		}
+		fmt.Printf("sync check: %s backend OK (put/get/head/list/delete round-trip)\n", cfg.Provider)
+		return nil
 	}
 
 	var eng *syncpkg.Engine

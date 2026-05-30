@@ -64,12 +64,13 @@ func (v VV) clone() VV {
 
 // Entry is one note's sync metadata, keyed by its WeftID.
 type Entry struct {
-	WeftID string `json:"weft_id"`
-	Path   string `json:"path"`
-	VV     VV     `json:"vv"`
-	BlobID string `json:"blob_id"` // sha256(content) hex
-	Size   int64  `json:"size"`
-	MTime  int64  `json:"mtime"`
+	WeftID  string `json:"weft_id"`
+	Path    string `json:"path"`
+	VV      VV     `json:"vv"`
+	BlobID  string `json:"blob_id"` // sha256(content) hex
+	Size    int64  `json:"size"`
+	MTime   int64  `json:"mtime"`
+	Deleted bool   `json:"deleted,omitempty"` // tombstone — bytes still live in .trash + the bucket
 }
 
 // state is the engine's local, never-synced bookkeeping.
@@ -78,6 +79,13 @@ type state struct {
 	Gen      uint64              `json:"gen"`       // our last published generation
 	LastSeen map[DeviceID]uint64 `json:"last_seen"` // peer → last folded generation
 	Manifest map[string]Entry    `json:"manifest"`  // our merged view, by WeftID
+	// MaxSelf is a monotonic high-water mark for THIS device's VV component. All
+	// local edits bump to MaxSelf+1 (not a per-note ++), so restoring an older
+	// state.json (a backup) can't re-issue a counter at or below one already
+	// published — which would make a genuine new edit look causally old and be
+	// silently dropped. It's also raised from any higher self-counter observed
+	// in a peer's manifest (proof we published more than this restored state knows).
+	MaxSelf uint64 `json:"max_self"`
 }
 
 // Engine converges one vault against one backend. All devices run identical
@@ -131,7 +139,20 @@ func newEngine(v *vault.Vault, be Backend, blobC, manC Cipher) (*Engine, error) 
 	if e.st.Manifest == nil {
 		e.st.Manifest = map[string]Entry{}
 	}
+	// Recover the self high-water mark from existing entries (covers an upgrade
+	// from state without MaxSelf, and a restored-but-not-empty backup).
+	for _, en := range e.st.Manifest {
+		if c := en.VV[e.st.Device]; c > e.st.MaxSelf {
+			e.st.MaxSelf = c
+		}
+	}
 	return e, nil
+}
+
+// nextSelf returns the next monotonic counter for this device's VV component.
+func (e *Engine) nextSelf() uint64 {
+	e.st.MaxSelf++
+	return e.st.MaxSelf
 }
 
 // Device returns this engine's device id.
@@ -167,7 +188,9 @@ func (e *Engine) Sync() (Result, error) {
 
 // scanLocal walks the vault and folds genuine local edits into our manifest,
 // bumping our own VV component. A note is "edited" when its content hash differs
-// from what the manifest records (new note, body edit, or move).
+// from what the manifest records (new note, body edit, or move keyed by WeftID).
+// After the walk, any non-deleted entry whose note has vanished from disk is
+// tombstoned (a user deletion) — the bytes survive in the bucket + .trash.
 func (e *Engine) scanLocal() error {
 	notes, err := e.v.List()
 	if err != nil {
@@ -187,14 +210,14 @@ func (e *Engine) scanLocal() error {
 		sealed := e.blobC.Seal(content)
 		bid := blobID(sealed) // address by hash-of-CIPHERTEXT — leaks nothing
 		cur, ok := e.st.Manifest[id]
-		if ok && cur.BlobID == bid && cur.Path == n.Path {
+		if ok && !cur.Deleted && cur.BlobID == bid && cur.Path == n.Path {
 			continue // unchanged
 		}
 		vv := VV{}
 		if ok {
 			vv = cur.VV.clone()
 		}
-		vv[e.st.Device]++ // a local edit bumps our component
+		vv[e.st.Device] = e.nextSelf() // monotonic, rollback-safe
 		e.st.Manifest[id] = Entry{
 			WeftID: id, Path: n.Path, VV: vv, BlobID: bid,
 			Size: int64(len(content)), MTime: n.ModTime.Unix(),
@@ -202,6 +225,23 @@ func (e *Engine) scanLocal() error {
 		if _, err := e.be.PutIfAbsent("blobs/"+bid, sealed); err != nil {
 			return err
 		}
+	}
+
+	// Deletion detection: an entry we believe live but whose file is gone (and
+	// not merely moved — a move keeps the same WeftID, so it'd be in `seen`) is
+	// a user deletion → tombstone it. The v.Exists guard avoids a transient read
+	// error masquerading as a delete.
+	for id, en := range e.st.Manifest {
+		if en.Deleted || seen[id] {
+			continue
+		}
+		if e.v.Exists(en.Path) {
+			continue
+		}
+		en.Deleted = true
+		en.VV = en.VV.clone()
+		en.VV[e.st.Device] = e.nextSelf()
+		e.st.Manifest[id] = en
 	}
 	return nil
 }
@@ -303,38 +343,75 @@ func (e *Engine) pull(res *Result) error {
 }
 
 // foldEntry merges one remote entry into our manifest + disk, per the four
-// version-vector cases. Never overwrites a divergent local edit; never deletes.
+// version-vector cases. Raises the self high-water mark from the peer's view of
+// us (rollback safety). Honors delete-loses-to-edit. Never silently overwrites a
+// divergent local edit; never hard-deletes (tombstones move bytes to .trash).
 func (e *Engine) foldEntry(id string, r Entry, peer DeviceID, res *Result) error {
+	if c := r.VV[e.st.Device]; c > e.st.MaxSelf {
+		e.st.MaxSelf = c // the peer saw us further along than our (maybe restored) state knows
+	}
 	l, have := e.st.Manifest[id]
 	if !have {
-		// New to us: adopt and write it.
 		return e.applyRemote(id, r, res)
 	}
 	aGE, bGE := cmp(l.VV, r.VV)
+	concurrent := !aGE && !bGE
+
+	// delete-loses-to-edit: a concurrent tombstone vs edit always resolves in
+	// favor of the EDIT (a never-delete tool should resurrect, not vanish).
+	if concurrent && (l.Deleted != r.Deleted) {
+		merged := maxVV(l.VV, r.VV)
+		if r.Deleted { // remote tombstoned, we edited → keep our edit, swallow the tombstone
+			l.VV = merged
+			e.st.Manifest[id] = l
+			return nil
+		}
+		// we tombstoned, remote edited → resurrect the remote edit at its path.
+		r.VV = merged
+		return e.applyRemote(id, r, res)
+	}
+
 	switch {
 	case aGE && bGE: // equal VV
-		if l.BlobID != r.BlobID {
-			return e.conflict(id, l, r, res) // same VV, different bytes — anomaly, treat as conflict
+		if l.BlobID != r.BlobID || l.Deleted != r.Deleted {
+			return e.conflict(id, l, r, res)
 		}
 		return nil
-	case aGE && !bGE: // local dominates — we're ahead, nothing to apply
+	case aGE && !bGE: // local dominates — we're ahead
 		return nil
-	case !aGE && bGE: // remote dominates — fast-forward
+	case !aGE && bGE: // remote dominates — fast-forward (incl. a dominating tombstone)
 		return e.applyRemote(id, r, res)
-	default: // concurrent — true conflict
+	default: // concurrent, same deleted-state — content conflict
 		return e.conflict(id, l, r, res)
 	}
 }
 
-// applyRemote writes the remote version to disk (fast-forward) and adopts its
-// entry. Same content (blob already present) is a metadata-only update.
+// applyRemote brings local state to the remote entry. A tombstone moves our copy
+// to .trash (never a hard delete); a path change is completed as a move (old
+// file trashed); otherwise the remote content is written at its path. Same
+// content (blob present) is a metadata-only update.
 func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
+	prev, had := e.st.Manifest[id]
+
+	if r.Deleted {
+		if had && !prev.Deleted {
+			_ = e.v.Trash(prev.Path) // preserve bytes in .trash
+			res.Applied++
+		}
+		e.st.Manifest[id] = r
+		return nil
+	}
+
 	content, err := e.getBlob(r.BlobID)
 	if err != nil {
-		return nil // blob not yet uploaded by peer; skip this round, retry next pull
+		return nil // peer's blob not uploaded yet; retry next pull
 	}
 	if err := e.v.Write(r.Path, content); err != nil {
 		return err
+	}
+	// Rename/move: if the note used to live elsewhere, trash the stale old file.
+	if had && prev.Path != "" && prev.Path != r.Path {
+		_ = e.v.Trash(prev.Path)
 	}
 	e.st.Manifest[id] = r
 	res.Applied++
@@ -350,7 +427,12 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 // (identical bytes under concurrent VVs) just merges the version vectors.
 func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	merged := maxVV(l.VV, r.VV)
-	if l.BlobID == r.BlobID { // same content, concurrent VV — not a real divergence
+	if l.Deleted && r.Deleted { // both tombstoned — stay deleted, just merge VVs
+		l.VV = merged
+		e.st.Manifest[id] = l
+		return nil
+	}
+	if l.BlobID == r.BlobID && l.Deleted == r.Deleted { // identical state — not a divergence
 		l.VV = merged
 		e.st.Manifest[id] = l
 		return nil
