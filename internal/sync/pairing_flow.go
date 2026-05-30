@@ -39,6 +39,13 @@ type pairReveal struct {
 	Na []byte `json:"na"`
 }
 
+// Fixed sizes for the pairing nonces and commitment, pinned on read so a malicious
+// bucket can't post an oversized blob (a memory-DoS on the pairing client).
+const (
+	nonceLen  = 16 // pairing nonce bytes
+	commitLen = 32 // blake2b-256 commitment bytes
+)
+
 func pairPrefix(reqID string) string { return "pairing/" + reqID + "/" }
 
 func randBytes(n int) ([]byte, error) {
@@ -80,7 +87,7 @@ func StartPairing(v *vault.Vault, cfg Config) (*Pairing, error) {
 	if err != nil {
 		return nil, err
 	}
-	na, err := randBytes(16)
+	na, err := randBytes(nonceLen)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +117,7 @@ func (p *Pairing) FetchResponderKey() (bool, error) {
 		return false, err
 	}
 	var m pairKeyMsg
-	if err := json.Unmarshal(data, &m); err != nil || len(m.ResponderPub) != 32 || len(m.Nb) == 0 {
+	if err := json.Unmarshal(data, &m); err != nil || len(m.ResponderPub) != 32 || len(m.Nb) != nonceLen {
 		return false, errors.New("sync: malformed pairing key")
 	}
 	copy(p.respPub[:], m.ResponderPub)
@@ -205,7 +212,7 @@ func BeginApprove(be Backend, reqID string, vk VaultKey) (*PairApproval, error) 
 		return nil, errors.New("sync: no such pairing request")
 	}
 	var req pairReq
-	if json.Unmarshal(reqBody, &req) != nil || len(req.InitiatorPub) != 32 || len(req.Commit) == 0 {
+	if json.Unmarshal(reqBody, &req) != nil || len(req.InitiatorPub) != 32 || len(req.Commit) != commitLen {
 		return nil, errors.New("sync: malformed pairing request")
 	}
 	a := &PairApproval{be: be, reqID: reqID, vk: vk, commit: req.Commit}
@@ -215,7 +222,7 @@ func BeginApprove(be Backend, reqID string, vk VaultKey) (*PairApproval, error) 
 	if err != nil {
 		return nil, err
 	}
-	nb, err := randBytes(16)
+	nb, err := randBytes(nonceLen)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +246,7 @@ func (a *PairApproval) AwaitReveal() (bool, error) {
 		return false, err
 	}
 	var r pairReveal
-	if json.Unmarshal(data, &r) != nil || len(r.Na) == 0 {
+	if json.Unmarshal(data, &r) != nil || len(r.Na) != nonceLen {
 		return false, errors.New("sync: malformed pairing reveal")
 	}
 	if !hmac.Equal(commitNonce(a.initiatorPub, r.Na), a.commit) {
