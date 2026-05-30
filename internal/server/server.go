@@ -22,6 +22,7 @@ import (
 	"weft/internal/embed"
 	"weft/internal/graph"
 	"weft/internal/index"
+	"weft/internal/noteid"
 	"weft/internal/surface"
 	"weft/internal/vault"
 	"weft/internal/wiki"
@@ -286,6 +287,7 @@ func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			title = body.Title
 		}
 		rel := uniqueClipPath(v, time.Now(), clip.Slug(title))
+		cleaned = prepareNote(v, rel, cleaned) // stamp WeftID + link ids
 		if err := v.Write(rel, cleaned); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -843,6 +845,7 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			}
 		}
 
+		content = prepareNote(v, rel, content) // stamp/preserve WeftID + link ids
 		if err := v.Write(rel, content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -869,6 +872,12 @@ func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Hand
 			return
 		}
 		if content, err := v.Read(rel); err == nil {
+			// Stamp the daily's WeftID on first touch (the stub has none).
+			if out, _, did := noteid.Ensure(content, rel); did {
+				if v.Write(rel, out) == nil {
+					content = out
+				}
+			}
 			title, body := extractTitleBody(content)
 			_ = ix.Upsert(index.Note{
 				Path:    rel,
@@ -905,6 +914,14 @@ func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 		if err != nil {
 			continue
 		}
+		// Backfill a durable WeftID into any note that lacks one (rewritten once,
+		// crash-safe via atomic Write). Content-seeded so two devices holding the
+		// same pre-sync note converge on the same id rather than forking.
+		if out, _, did := noteid.Ensure(content, n.Path); did {
+			if v.Write(n.Path, out) == nil {
+				content = out
+			}
+		}
 		title, body := extractTitleBody(content)
 		if err := ix.Upsert(index.Note{
 			Path:    n.Path,
@@ -919,6 +936,98 @@ func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 		updateEmbedding(ix, emb, n.Path, title+"\n"+body)
 	}
 	return nil
+}
+
+// prepareNote stamps the note's durable WeftID and data-weft-id on its internal
+// links before persisting. It PRESERVES an existing id (read from disk) so a
+// writer that rebuilds <head> and drops the meta — the TipTap editor, the
+// clipper — doesn't churn the note's identity on every save; only a genuinely
+// new note mints a (content-seeded, device-convergent) id.
+func prepareNote(v *vault.Vault, rel string, posted []byte) []byte {
+	id := ""
+	if existing, err := v.Read(rel); err == nil {
+		id = noteid.ReadWeftID(existing)
+	}
+	if id == "" {
+		id = noteid.Derive(rel, posted)
+	}
+	withID, err := noteid.WithWeftID(posted, id)
+	if err != nil {
+		withID = posted
+	}
+	return stampLinks(v, withID)
+}
+
+// stampLinks adds data-weft-id to each internal .html anchor, resolved from the
+// target note's WeftID. The readable href stays (so a file still opens
+// standalone in any browser); the id is what lets sync repair a link after the
+// target is renamed. Read-only on targets — a target without an id yet is
+// skipped and picked up on a later save (its own save/backfill mints it).
+func stampLinks(v *vault.Vault, content []byte) []byte {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return content
+	}
+	changed := false
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode && n.Data == "a" {
+			href, hasID := "", false
+			for _, a := range n.Attr {
+				switch a.Key {
+				case "href":
+					href = a.Val
+				case "data-weft-id":
+					hasID = true
+				}
+			}
+			if href != "" && !hasID {
+				if rel, ok := internalNoteRel(href); ok {
+					if tc, err := v.Read(rel); err == nil {
+						if id := noteid.ReadWeftID(tc); id != "" {
+							n.Attr = append(n.Attr, gohtml.Attribute{Key: "data-weft-id", Val: id})
+							changed = true
+						}
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if !changed {
+		return content
+	}
+	var buf bytes.Buffer
+	if gohtml.Render(&buf, doc) != nil {
+		return content
+	}
+	return buf.Bytes()
+}
+
+// internalNoteRel normalizes an href to a vault-relative .html path, or ok=false
+// for external/anchor/site-absolute/weft:// links and non-.html targets.
+func internalNoteRel(href string) (string, bool) {
+	h := strings.TrimSpace(href)
+	if h == "" {
+		return "", false
+	}
+	low := strings.ToLower(h)
+	for _, p := range []string{"http://", "https://", "mailto:", "javascript:", "weft://", "#", "/"} {
+		if strings.HasPrefix(low, p) {
+			return "", false
+		}
+	}
+	h = strings.TrimPrefix(h, "./")
+	if i := strings.IndexAny(h, "?#"); i >= 0 {
+		h = h[:i]
+	}
+	if h == "" || !strings.HasSuffix(strings.ToLower(h), ".html") {
+		return "", false
+	}
+	return h, true
 }
 
 // updateEmbedding is a no-op when emb is nil. Errors are swallowed: a failed

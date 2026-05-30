@@ -12,8 +12,8 @@ import (
 
 // Note is a single .html file in the vault.
 type Note struct {
-	Path    string    // relative path within vault, e.g. "daily/2026-05-25.html"
-	Name    string    // human-readable name without extension, e.g. "daily/2026-05-25"
+	Path    string // relative path within vault, e.g. "daily/2026-05-25.html"
+	Name    string // human-readable name without extension, e.g. "daily/2026-05-25"
 	ModTime time.Time
 	Size    int64
 }
@@ -65,6 +65,12 @@ func (v *Vault) Read(rel string) ([]byte, error) {
 
 // Write saves HTML content to a note. Creates parent directories as needed.
 // Returns os.ErrPermission if rel contains ".." or would escape the vault root.
+//
+// The write is atomic: content goes to a temp file in the same directory, is
+// fsync'd, then renamed over the target (rename is atomic on POSIX/NTFS). A
+// crash thus leaves either the old file or the complete new one — never a
+// half-written note. This matters on its own (power loss mid-save) and is a
+// prerequisite for sync, where torn writes would propagate as corruption.
 func (v *Vault) Write(rel string, content []byte) error {
 	if strings.Contains(rel, "..") {
 		return os.ErrPermission
@@ -73,10 +79,42 @@ func (v *Vault) Write(rel string, content []byte) error {
 	if !strings.HasPrefix(full, v.Root+string(filepath.Separator)) {
 		return os.ErrPermission
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	dir := filepath.Dir(full)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(full, content, 0o644)
+
+	tmp, err := os.CreateTemp(dir, ".weft-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we bail before the rename succeeds.
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // flush bytes to disk before rename
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil { // CreateTemp makes 0600
+		return err
+	}
+	if err := os.Rename(tmpName, full); err != nil {
+		return err
+	}
+	// fsync the directory so the rename itself survives a crash.
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 // Exists reports whether a note exists at rel.
