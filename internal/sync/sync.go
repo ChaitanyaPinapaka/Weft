@@ -181,49 +181,79 @@ func (e *Engine) nextSelf() uint64 {
 }
 
 // recoverSelf heals this device's high-water marks (Gen + MaxSelf) from its OWN
-// published manifest in the backend, BEFORE scanLocal mints any new counter or
+// published manifests in the backend, BEFORE scanLocal mints any new counter or
 // push picks a generation. Restoring an older state.json backup rolls both back;
 // without this, scanLocal would issue a self-counter at or below one already
 // published (which a peer reads as causally old and silently drops), and push
-// would regress HEAD over newer generations. The peer-fold raise in foldEntry
-// runs too late (after push) and never consults our own manifest (pull skips
-// self). A no-op once we're current (the common path): one HEAD read, and the
-// full manifest is fetched only when the backend proves we're behind.
+// would regress over newer generations. The peer-fold raise in foldEntry runs too
+// late (after push) and never consults our own manifest (pull skips self).
+//
+// It must NOT trust the HEAD pointer: HEAD is a single mutable object the
+// untrusted cloud can delete or garble with one write, and a low-but-validly-
+// signed old HEAD could be replayed. Instead it heals from the self-MANIFESTS,
+// which the cloud cannot forge (sealed under the vault key) — the max self-counter
+// across every self-manifest that decrypts is a tamper-resistant high-water mark.
+// Scanning content (not key numbers) also defeats relabeling a low generation onto
+// a high key. Fast path: one List; the manifests are fetched only when the backend
+// shows a generation beyond our local view (a restore, or tampering).
+//
+// Residual limit: if the cloud DELETES every self-manifest beyond our restored
+// view, the high-water mark is genuinely gone from the bucket — pure data
+// destruction, recoverable only from a peer that still holds it.
 func (e *Engine) recoverSelf() error {
-	headBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/HEAD", e.st.Device))
+	prefix := fmt.Sprintf("manifest/%s/", e.st.Device)
+	keys, err := e.be.List(prefix)
 	if err != nil {
-		return nil // never published, or a transient backend error — nothing to heal
+		return nil // transient backend error — heal next cycle
 	}
-	var hd signedHead
-	if json.Unmarshal(headBytes, &hd) != nil {
-		return nil
+	var gMax uint64
+	for _, k := range keys {
+		if g, ok := parseGen(strings.TrimPrefix(k, prefix)); ok && g > gMax {
+			gMax = g
+		}
 	}
-	if !hd.verify(e.signPriv.Public().(ed25519.PublicKey), e.st.Device) {
-		return nil // a cloud-forged self-HEAD can't inflate our generation
+	if gMax <= e.st.Gen {
+		return nil // fast path: nothing published beyond our local view
 	}
-	gen := hd.Gen
-	if gen <= e.st.Gen {
-		return nil // our local view is already at/ahead of what we published
-	}
-	e.st.Gen = gen // don't reissue generations we've already published
-	manBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/%d.json", e.st.Device, gen))
-	if err != nil {
-		return nil
-	}
-	plain, err := e.manC.Open(manBytes)
-	if err != nil {
-		return nil
-	}
-	var mine map[string]Entry
-	if json.Unmarshal(plain, &mine) != nil {
-		return nil
-	}
-	for _, en := range mine {
-		if c := en.VV[e.st.Device]; c > e.st.MaxSelf {
-			e.st.MaxSelf = c
+	for _, k := range keys {
+		g, ok := parseGen(strings.TrimPrefix(k, prefix))
+		if !ok {
+			continue
+		}
+		manBytes, err := e.be.Get(k)
+		if err != nil {
+			continue
+		}
+		plain, err := e.manC.Open(manBytes)
+		if err != nil {
+			continue // garbled or foreign — can't be one we published
+		}
+		var mine map[string]Entry
+		if json.Unmarshal(plain, &mine) != nil {
+			continue
+		}
+		if g > e.st.Gen {
+			e.st.Gen = g // don't reissue generations we've already published
+		}
+		for _, en := range mine {
+			if c := en.VV[e.st.Device]; c > e.st.MaxSelf {
+				e.st.MaxSelf = c
+			}
 		}
 	}
 	return nil
+}
+
+// parseGen extracts N from a "<N>.json" manifest object name.
+func parseGen(name string) (uint64, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return 0, false
+	}
+	var g uint64
+	if _, err := fmt.Sscanf(strings.TrimSuffix(name, ".json"), "%d", &g); err != nil {
+		return 0, false
+	}
+	return g, true
 }
 
 // Device returns this engine's device id.
@@ -234,7 +264,8 @@ type Result struct {
 	Pushed         int
 	Applied        int // remote changes written locally (fast-forwards)
 	ConflictCopies []string
-	Rejected       int // peer HEADs dropped: bad signature, unknown device, or HEAD/manifest mismatch
+	Rejected       int // peer HEADs dropped: bad signature or HEAD/manifest mismatch
+	Unverifiable   int // peer HEADs with no verifying key in the registry (e.g. a withheld device record)
 }
 
 // Sync runs one full convergence cycle: capture local edits, push, pull peers,
@@ -418,6 +449,13 @@ func (e *Engine) refreshRegistry() error {
 		if json.Unmarshal(plain, &rec) != nil {
 			continue
 		}
+		// The record's claimed id must match its object key, so a sealed record
+		// relocated to another device's key can't (re)bind a pubkey under an id it
+		// wasn't written for. Belt-and-suspenders over the AEAD: the cloud can't
+		// forge a record, but this also holds under a future plaintext registry.
+		if string(rec.DeviceID) != strings.TrimPrefix(k, "meta/devices/") {
+			continue
+		}
 		if len(rec.SignPub) == ed25519.PublicKeySize {
 			e.registry[rec.DeviceID] = ed25519.PublicKey(rec.SignPub)
 		}
@@ -458,7 +496,11 @@ func (e *Engine) pull(res *Result) error {
 		}
 		pub, ok := e.registry[dev]
 		if !ok {
-			continue // no verifying key for this device yet — appears once it registers
+			// No verifying key yet (device not registered) or its record was
+			// withheld/dropped by the cloud — surface it instead of looking like
+			// an up-to-date peer. Folds once the record (re)appears.
+			res.Unverifiable++
+			continue
 		}
 		if !hd.verify(pub, dev) {
 			res.Rejected++ // forged or tampered HEAD

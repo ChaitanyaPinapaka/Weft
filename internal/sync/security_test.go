@@ -3,6 +3,8 @@ package sync
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -141,5 +143,112 @@ func TestEncryptedRegistryRoundTrips(t *testing.T) {
 	}
 	if json.Valid(sealed) {
 		t.Fatal("device record must be sealed at rest, not plaintext JSON the cloud can read/forge")
+	}
+}
+
+// drives A to gen 5 and B to fold it, snapshots A's state.json as a "backup",
+// then returns everything needed to simulate a post-restore edit.
+func restoreSetup(t *testing.T) (va *vault.Vault, ea, eb *Engine, backup []byte, statePath string) {
+	t.Helper()
+	be, _ := NewFileBackend(t.TempDir())
+	va, _ = vault.New(t.TempDir())
+	vb, _ := vault.New(t.TempDir())
+	ea, _ = New(va, be)
+	eb, _ = New(vb, be)
+	statePath = filepath.Join(va.Root, ".weft", "sync", "state.json")
+
+	mustWrite(t, va, "n.html", note("W", "<p>v1</p>"))
+	ea.Sync()
+	backup, _ = os.ReadFile(statePath) // gen 1 backup
+	for i := 2; i <= 5; i++ {
+		mustWrite(t, va, "n.html", note("W", fmt.Sprintf("<p>v%d</p>", i)))
+		ea.Sync()
+	}
+	eb.Sync()
+	if !strings.Contains(read(t, eb.v, "n.html"), "v5") {
+		t.Fatal("B should hold v5 before the restore")
+	}
+	return va, ea, eb, backup, statePath
+}
+
+// TestRestoreSurvivesSelfHeadDeletion: a malicious cloud deleting our own HEAD
+// pointer must NOT defeat counter recovery — recoverSelf heals from the surviving
+// sealed self-manifests, so a genuine post-restore edit still outranks the peer's
+// high-water mark and is folded.
+func TestRestoreSurvivesSelfHeadDeletion(t *testing.T) {
+	va, ea, eb, backup, statePath := restoreSetup(t)
+
+	// Cloud drops A's HEAD pointer (one write within the threat model).
+	if err := ea.be.Delete(headKey(ea.st.Device)); err != nil {
+		t.Fatal(err)
+	}
+	// User restores A from the gen-1 backup, then makes a genuine new edit.
+	if err := os.WriteFile(statePath, backup, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ea2, _ := New(va, ea.be)
+	mustWrite(t, va, "n.html", note("W", "<p>POST-RESTORE</p>"))
+	if _, err := ea2.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ea2.st.Manifest["W"].VV[ea2.st.Device]; got <= 5 {
+		t.Fatalf("post-restore edit must outrank the published high-water 5, got %d", got)
+	}
+	eb.Sync()
+	if !strings.Contains(read(t, eb.v, "n.html"), "POST-RESTORE") {
+		t.Fatalf("HEAD deletion + restore silently dropped the post-restore edit: %q", read(t, eb.v, "n.html"))
+	}
+}
+
+// TestRestoreSurvivesGarbageSelfHead: same as above but the cloud writes garbage
+// (not a deletion) at our HEAD key.
+func TestRestoreSurvivesGarbageSelfHead(t *testing.T) {
+	va, ea, eb, backup, statePath := restoreSetup(t)
+
+	if err := ea.be.Put(headKey(ea.st.Device), []byte("not json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, backup, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ea2, _ := New(va, ea.be)
+	mustWrite(t, va, "n.html", note("W", "<p>POST-RESTORE</p>"))
+	if _, err := ea2.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	eb.Sync()
+	if !strings.Contains(read(t, eb.v, "n.html"), "POST-RESTORE") {
+		t.Fatalf("garbage HEAD + restore silently dropped the post-restore edit: %q", read(t, eb.v, "n.html"))
+	}
+}
+
+// TestRelabeledManifestCannotLowerHighWater: copying a LOW self-manifest onto a
+// HIGH generation key must not trick recoverSelf into healing a too-low MaxSelf —
+// it scans manifest CONTENT, not key numbers, so the true high-water survives.
+func TestRelabeledManifestCannotLowerHighWater(t *testing.T) {
+	va, ea, eb, backup, statePath := restoreSetup(t)
+
+	// Cloud copies A's gen-1 manifest bytes onto a far-higher generation key.
+	g1, err := ea.be.Get(fmt.Sprintf("manifest/%s/1.json", ea.st.Device))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ea.be.Put(fmt.Sprintf("manifest/%s/99.json", ea.st.Device), g1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, backup, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ea2, _ := New(va, ea.be)
+	mustWrite(t, va, "n.html", note("W", "<p>POST-RESTORE</p>"))
+	if _, err := ea2.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ea2.st.Manifest["W"].VV[ea2.st.Device]; got <= 5 {
+		t.Fatalf("relabel attack lowered the high-water mark: counter %d <= 5", got)
+	}
+	eb.Sync()
+	if !strings.Contains(read(t, eb.v, "n.html"), "POST-RESTORE") {
+		t.Fatalf("relabel attack caused a silent drop: %q", read(t, eb.v, "n.html"))
 	}
 }
