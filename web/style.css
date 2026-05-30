@@ -340,6 +340,14 @@ header .status.offline { color: #c0392b; }
   padding-left: 14px;
   color: var(--muted);
 }
+/* Captured thoughts (before an editor round-trip strips the class). */
+.ProseMirror blockquote.capture { border-left-color: var(--accent); }
+.ProseMirror blockquote.capture time {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.82em;
+  margin-right: 6px;
+}
 
 /* TipTap's Placeholder extension marks empty nodes with .is-empty plus
    .is-editor-empty on the very first node. We render the attribute as a

@@ -147,6 +147,14 @@ header .status.offline { color: #c0392b; }
   color: var(--muted);
   margin: 0.8em 0;
 }
+/* Captured thoughts: a quoted line with a muted monospace timestamp. */
+.prose blockquote.capture { border-left-color: var(--accent); }
+.prose blockquote.capture time {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.82em;
+  margin-right: 6px;
+}
 .prose ul, .prose ol { padding-left: 1.4em; margin-bottom: 0.9em; }
 .prose img { max-width: 100%; height: auto; }
 

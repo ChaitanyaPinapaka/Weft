@@ -32,15 +32,15 @@ func TestAppendCaptureCreatesDaily(t *testing.T) {
 	if !strings.Contains(body, "<h1>2026-05-25</h1>") {
 		t.Fatalf("missing daily stub heading: %q", body)
 	}
-	if !strings.Contains(body, `<aside class="capture" data-ts="2026-05-25T19:48:49Z">`) {
-		t.Fatalf("missing aside: %q", body)
+	if !strings.Contains(body, `<blockquote class="capture" data-ts="2026-05-25T19:48:49Z">`) {
+		t.Fatalf("missing capture blockquote: %q", body)
 	}
 	if !strings.Contains(body, "<time>19:48</time> first idea") {
 		t.Fatalf("missing time/text: %q", body)
 	}
 	// The capture must land INSIDE the body, before </body> — not stranded
 	// after </html> where no surface would render it (the bug this fixes).
-	if strings.Index(body, "<aside") > strings.Index(body, "</body>") {
+	if strings.Index(body, "<blockquote") > strings.Index(body, "</body>") {
 		t.Fatalf("capture leaked outside <body>: %q", body)
 	}
 
@@ -111,13 +111,13 @@ func TestAppendCaptureTwiceProducesTwoAsides(t *testing.T) {
 
 	got, _ := v.Read("daily/2026-05-25.html")
 	body := string(got)
-	if n := strings.Count(body, `<aside class="capture"`); n != 2 {
-		t.Fatalf("aside count = %d, want 2; body = %q", n, body)
+	if n := strings.Count(body, `<blockquote class="capture"`); n != 2 {
+		t.Fatalf("capture count = %d, want 2; body = %q", n, body)
 	}
-	if !strings.Contains(body, " one</aside>") {
+	if !strings.Contains(body, " one</p></blockquote>") {
 		t.Fatalf("missing first capture: %q", body)
 	}
-	if !strings.Contains(body, " two</aside>") {
+	if !strings.Contains(body, " two</p></blockquote>") {
 		t.Fatalf("missing second capture: %q", body)
 	}
 	// Order matters: first capture must precede the second on disk.
