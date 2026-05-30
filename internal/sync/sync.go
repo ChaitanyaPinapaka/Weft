@@ -81,21 +81,38 @@ type state struct {
 }
 
 // Engine converges one vault against one backend. All devices run identical
-// logic; the backend is dumb storage.
+// logic; the backend is dumb storage. blobC/manC seal content + manifests; with
+// the nop ciphers (New) the bucket holds plaintext, with real ciphers
+// (NewEncrypted) it holds only ciphertext — the convergence code is identical.
 type Engine struct {
-	v   *vault.Vault
-	be  Backend
-	st  state
-	dir string // <vault>/.weft/sync
+	v     *vault.Vault
+	be    Backend
+	st    state
+	dir   string // <vault>/.weft/sync
+	blobC Cipher
+	manC  Cipher
 }
 
-// New loads (or initializes) the engine's local state under <vault>/.weft/sync.
+// New loads (or initializes) a PLAINTEXT engine (nop ciphers) — P1 behavior,
+// used by tests and the filesystem self-host before keys are set up.
 func New(v *vault.Vault, be Backend) (*Engine, error) {
+	return newEngine(v, be, nopCipher{}, nopCipher{})
+}
+
+// NewEncrypted loads an E2EE engine: blobs and manifests are sealed under
+// subkeys of vk, so the backend (the user's cloud) sees only ciphertext and
+// ciphertext-derived names. Every device with the same vk converges; the cloud
+// can decrypt nothing.
+func NewEncrypted(v *vault.Vault, be Backend, vk VaultKey) (*Engine, error) {
+	return newEngine(v, be, newCipher(vk, "weft/v1 blob"), newCipher(vk, "weft/v1 manifest"))
+}
+
+func newEngine(v *vault.Vault, be Backend, blobC, manC Cipher) (*Engine, error) {
 	dir := filepath.Join(v.Root, ".weft", "sync")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	e := &Engine{v: v, be: be, dir: dir}
+	e := &Engine{v: v, be: be, dir: dir, blobC: blobC, manC: manC}
 	if data, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
 		if err := json.Unmarshal(data, &e.st); err != nil {
 			return nil, fmt.Errorf("sync: corrupt state: %w", err)
@@ -167,7 +184,8 @@ func (e *Engine) scanLocal() error {
 			continue // un-stamped notes are picked up after the indexAll backfill stamps them
 		}
 		seen[id] = true
-		bid := blobID(content)
+		sealed := e.blobC.Seal(content)
+		bid := blobID(sealed) // address by hash-of-CIPHERTEXT — leaks nothing
 		cur, ok := e.st.Manifest[id]
 		if ok && cur.BlobID == bid && cur.Path == n.Path {
 			continue // unchanged
@@ -181,17 +199,31 @@ func (e *Engine) scanLocal() error {
 			WeftID: id, Path: n.Path, VV: vv, BlobID: bid,
 			Size: int64(len(content)), MTime: n.ModTime.Unix(),
 		}
-		if err := e.stageBlob(bid, content); err != nil {
+		if _, err := e.be.PutIfAbsent("blobs/"+bid, sealed); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// stageBlob uploads a content-addressed blob (idempotent: skipped if present).
-func (e *Engine) stageBlob(bid string, content []byte) error {
-	_, err := e.be.PutIfAbsent("blobs/"+bid, content)
-	return err
+// putBlob seals content, content-addresses it by hash-of-ciphertext, and
+// uploads idempotently. Returns the blob id to record in the manifest.
+func (e *Engine) putBlob(content []byte) (string, error) {
+	sealed := e.blobC.Seal(content)
+	bid := blobID(sealed)
+	if _, err := e.be.PutIfAbsent("blobs/"+bid, sealed); err != nil {
+		return "", err
+	}
+	return bid, nil
+}
+
+// getBlob fetches and decrypts a blob by id.
+func (e *Engine) getBlob(bid string) ([]byte, error) {
+	sealed, err := e.be.Get("blobs/" + bid)
+	if err != nil {
+		return nil, err
+	}
+	return e.blobC.Open(sealed)
 }
 
 // push writes a new full-manifest generation and flips HEAD — but only if our
@@ -199,7 +231,8 @@ func (e *Engine) stageBlob(bid string, content []byte) error {
 // already staged in scanLocal/apply, so a published manifest's blobs always
 // exist; HEAD flips LAST, so an interrupted push is invisible to peers.
 func (e *Engine) push(res *Result) error {
-	snapshot, _ := json.Marshal(e.st.Manifest)
+	plain, _ := json.Marshal(e.st.Manifest)
+	snapshot := e.manC.Seal(plain) // deterministic seal: equal manifests → equal bytes
 	prevKey := fmt.Sprintf("manifest/%s/%d.json", e.st.Device, e.st.Gen)
 	if e.st.Gen > 0 {
 		if prev, err := e.be.Get(prevKey); err == nil && string(prev) == string(snapshot) {
@@ -251,8 +284,12 @@ func (e *Engine) pull(res *Result) error {
 		if err != nil {
 			continue
 		}
+		plain, err := e.manC.Open(manBytes)
+		if err != nil {
+			continue // not decryptable with our key — skip
+		}
 		var peer map[string]Entry
-		if json.Unmarshal(manBytes, &peer) != nil {
+		if json.Unmarshal(plain, &peer) != nil {
 			continue
 		}
 		for id, r := range peer {
@@ -292,7 +329,7 @@ func (e *Engine) foldEntry(id string, r Entry, peer DeviceID, res *Result) error
 // applyRemote writes the remote version to disk (fast-forward) and adopts its
 // entry. Same content (blob already present) is a metadata-only update.
 func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
-	content, err := e.be.Get("blobs/" + r.BlobID)
+	content, err := e.getBlob(r.BlobID)
 	if err != nil {
 		return nil // blob not yet uploaded by peer; skip this round, retry next pull
 	}
@@ -310,7 +347,7 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 // does not re-spawn copies on every future sync. No data is ever lost: both
 // versions live as first-class notes.
 func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
-	content, err := e.be.Get("blobs/" + r.BlobID)
+	content, err := e.getBlob(r.BlobID)
 	if err != nil {
 		return nil // remote blob not present yet; retry next pull
 	}
@@ -325,12 +362,13 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 		return err
 	}
 	// Record the conflict-copy as a brand-new local note so it propagates.
+	bid, err := e.putBlob(stamped)
+	if err != nil {
+		return err
+	}
 	e.st.Manifest[cid] = Entry{
 		WeftID: cid, Path: cpath, VV: VV{e.st.Device: 1},
-		BlobID: blobID(stamped), Size: int64(len(stamped)), MTime: time.Now().Unix(),
-	}
-	if err := e.stageBlob(blobID(stamped), stamped); err != nil {
-		return err
+		BlobID: bid, Size: int64(len(stamped)), MTime: time.Now().Unix(),
 	}
 	// Resolve the original's divergence: local file stays, VV jumps to max.
 	l.VV = maxVV(l.VV, r.VV)
