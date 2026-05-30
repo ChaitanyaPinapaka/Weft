@@ -28,14 +28,20 @@ func TestAppendCaptureCreatesDaily(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(got)
-	if !strings.HasPrefix(body, "<h1>2026-05-25</h1>\n") {
-		t.Fatalf("missing daily stub: %q", body)
+	// The note is re-serialized as a full document; the stub heading survives.
+	if !strings.Contains(body, "<h1>2026-05-25</h1>") {
+		t.Fatalf("missing daily stub heading: %q", body)
 	}
 	if !strings.Contains(body, `<aside class="capture" data-ts="2026-05-25T19:48:49Z">`) {
 		t.Fatalf("missing aside: %q", body)
 	}
 	if !strings.Contains(body, "<time>19:48</time> first idea") {
 		t.Fatalf("missing time/text: %q", body)
+	}
+	// The capture must land INSIDE the body, before </body> — not stranded
+	// after </html> where no surface would render it (the bug this fixes).
+	if strings.Index(body, "<aside") > strings.Index(body, "</body>") {
+		t.Fatalf("capture leaked outside <body>: %q", body)
 	}
 
 	// Daily file should live where DailyPath says.
@@ -58,11 +64,13 @@ func TestAppendCapturePreservesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := v.Read("daily/2026-05-25.html")
-	if !strings.HasPrefix(string(got), original) {
+	raw, _ := v.Read("daily/2026-05-25.html")
+	got := string(raw)
+	// Prior content is preserved (re-serialized, so check by presence not prefix).
+	if !strings.Contains(got, "<h1>2026-05-25</h1>") || !strings.Contains(got, "<p>hard-won thoughts</p>") {
 		t.Fatalf("clobbered existing content: %q", got)
 	}
-	if !strings.Contains(string(got), "new note") {
+	if !strings.Contains(got, "new note") {
 		t.Fatalf("missing appended content: %q", got)
 	}
 }
