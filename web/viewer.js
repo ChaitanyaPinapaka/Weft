@@ -10,6 +10,7 @@
   const proseEl    = document.getElementById('prose');
   const pathEl     = document.getElementById('path');
   const statusEl   = document.getElementById('status');
+  const trailEl           = document.getElementById('brain-trail');
   const backlinksEl       = document.getElementById('brain-backlinks');
   const surfacedEl        = document.getElementById('brain-surfaced');
   const surfacedSectionEl = document.getElementById('brain-surfaced-section');
@@ -101,6 +102,8 @@
     if (reason === 'semantic')    return 'semantic';
     if (reason === 'recent')      return 'recent';
     if (reason === 'co-accessed') return 'co-accessed';
+    if (reason === 'base')        return 'base';
+    if (reason === 'resurfaced')  return 'resurfaced';
     if (reason.startsWith('on-this-day:')) {
       return reason.slice('on-this-day:'.length) + ' ago';
     }
@@ -109,6 +112,32 @@
       return 'similar ' + reason.slice('similar:'.length);
     }
     return reason;
+  }
+
+  // Thought trail: a faint breadcrumb of the path taken this session (A › B › C).
+  // trail[0] is the current focus note. Only shown when the trail has more than
+  // one entry (a real path). Crumbs link to /note/{path}.
+  function renderTrail(trail) {
+    trailEl.innerHTML = '';
+    if (!Array.isArray(trail) || trail.length <= 1) {
+      trailEl.hidden = true;
+      return;
+    }
+    trail.forEach((p, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'brain-trail-sep';
+        sep.textContent = '›';
+        trailEl.appendChild(sep);
+      }
+      const a = document.createElement('a');
+      a.className = 'brain-trail-crumb';
+      a.href = '/note/' + p;
+      a.textContent = titleFromPath(p);
+      a.title = p;
+      trailEl.appendChild(a);
+    });
+    trailEl.hidden = false;
   }
 
   function renderBacklinks(list) {
@@ -133,23 +162,49 @@
     backlinksEl.appendChild(ul);
   }
 
+  // Map a 0..1 fraction (0 = hottest/top, 1 = coldest/bottom) to an opacity in
+  // [MIN_TEMP_OPACITY, 1]. Restraint over decoration: temperature is conveyed
+  // by opacity + order only — no glow, no animation. Hot rises, dormant recedes
+  // to grey but never vanishes (we floor at MIN_TEMP_OPACITY).
+  const MIN_TEMP_OPACITY = 0.55;
+  function tempOpacity(frac) {
+    return (1 - frac * (1 - MIN_TEMP_OPACITY)).toFixed(3);
+  }
+
+  // Dissolving card: only render notes the current context actually activates,
+  // i.e. Spread > 0 (a backlink / semantic / co-access edge fired). Base-level-
+  // only notes are "recently opened" filing, not recall, so they stay in the
+  // quiet margin. If nothing crosses the threshold, the whole section is hidden.
   function renderSurfaced(items) {
     surfacedEl.innerHTML = '';
-    if (!items || items.length === 0) {
+    const activated = (items || []).filter(it => (it.Spread || 0) > 0);
+    if (activated.length === 0) {
       surfacedSectionEl.hidden = true;
       return;
     }
     surfacedSectionEl.hidden = false;
-    for (const it of items.slice(0, 12)) {
+    // Already sorted desc by Activation server-side; keep that order so the
+    // hottest memory sits on top. Cap mirrors the previous slice(0,12).
+    const shown = activated.slice(0, 12);
+    const denom = Math.max(shown.length - 1, 1); // avoid /0 when a single item
+    shown.forEach((it, i) => {
       const li = document.createElement('li');
       li.className = 'brain-item';
 
       const a = document.createElement('a');
       a.href = '/note/' + it.Path;
+      // Temperature by position: top item full strength, lower items dimmed
+      // toward --muted. Order encodes rank; opacity reinforces it quietly.
+      a.style.opacity = tempOpacity(i / denom);
+
+      // "resurfaced" — forgotten-yet-relevant. Subtle accent-tinted left border
+      // + a small ✦ so the moment reads as special without shouting.
+      const resurfaced = Array.isArray(it.Reasons) && it.Reasons.includes('resurfaced');
+      if (resurfaced) li.classList.add('brain-resurfaced');
 
       const title = document.createElement('span');
       title.className = 'brain-title';
-      title.textContent = it.Title || titleFromPath(it.Path);
+      title.textContent = (resurfaced ? '✦ ' : '') + (it.Title || titleFromPath(it.Path));
       a.appendChild(title);
 
       if (Array.isArray(it.Reasons) && it.Reasons.length) {
@@ -171,7 +226,7 @@
 
       li.appendChild(a);
       surfacedEl.appendChild(li);
-    }
+    });
   }
 
   function renderOnThisDay(items) {
@@ -206,6 +261,7 @@
 
   async function loadSurface() {
     if (!path) {
+      if (trailEl) trailEl.hidden = true;
       backlinksEl.textContent = '—';
       surfacedSectionEl.hidden = true;
       ontdSectionEl.hidden = true;
@@ -215,11 +271,13 @@
       const res = await fetch('/api/surface/' + path);
       if (!res.ok) throw new Error('http ' + res.status);
       const data = await res.json();
+      renderTrail(data.trail);
       renderBacklinks(data.backlinks);
       renderSurfaced(data.scored);
       renderOnThisDay(data.on_this_day);
     } catch (e) {
       // Silent on failure: panel stays a quiet dash, matches editor behaviour.
+      if (trailEl) trailEl.hidden = true;
       backlinksEl.className = 'brain-body';
       backlinksEl.textContent = '—';
       surfacedSectionEl.hidden = true;

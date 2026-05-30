@@ -10,6 +10,7 @@
 <header>
   <a class="home" href="/">Weft</a>
   <span class="vault-path" id="path">—</span>
+  <a class="notes-link" href="/notes">notes</a>
   <a class="edit-link" id="edit-link" href="#" hidden>edit</a>
   <span class="status" id="status" aria-live="polite">read-only</span>
 </header>
@@ -21,6 +22,9 @@
   </article>
 
   <aside class="brain" id="brain" aria-label="Brain panel">
+    <!-- Thought trail: faint breadcrumb of this session's path. Populated by
+         JS only when the trail has more than one entry (a real path). -->
+    <nav class="brain-trail" id="brain-trail" hidden aria-label="Thought trail"></nav>
     <section class="brain-section" id="brain-backlinks-section">
       <h2 class="brain-heading">Backlinks</h2>
       <div class="brain-body" id="brain-backlinks">—</div>

@@ -57,7 +57,11 @@ func Run(vaultPath string) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", listHandler(v))
+	// Home is today's daily note in the editor, cursor ready — capture-first,
+	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
+	// The vault list lives at /notes.
+	mux.HandleFunc("GET /{$}", homeHandler(v))
+	mux.HandleFunc("GET /notes", listHandler(v))
 	mux.HandleFunc("GET /note/{path...}", noteHandler(v, ix))
 	mux.HandleFunc("GET /raw/{path...}", rawHandler(v))
 	mux.HandleFunc("GET /edit/{path...}", editRedirectHandler())
@@ -196,6 +200,19 @@ func dailyRedirectHandler(v *vault.Vault) http.HandlerFunc {
 			return
 		}
 		http.Redirect(w, r, "/note/"+rel, http.StatusFound)
+	}
+}
+
+// homeHandler lands on today's daily note in the EDITOR (not the viewer):
+// capture-first, cursor ready. This is what "Open Weft → land in today" means.
+func homeHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel, err := v.EnsureDailyFromTemplate(time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/edit/"+rel, http.StatusFound)
 	}
 }
 

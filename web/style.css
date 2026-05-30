@@ -94,6 +94,27 @@ html.brain-collapsed .brain {
 }
 
 
+/* Thought trail: a faint, unobtrusive breadcrumb of the session path. Wraps so
+   a long trail doesn't force the panel wider (min-width:0 / max-width caps stay
+   honoured). Lives above the first section. */
+.brain-trail {
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 24px;
+  /* Keep long titles from blowing out the pinned panel width. */
+  overflow-wrap: anywhere;
+}
+.brain-trail-crumb {
+  color: var(--muted);
+  text-decoration: none;
+}
+.brain-trail-crumb:hover { color: var(--text); }
+.brain-trail-sep {
+  margin: 0 4px;
+  color: var(--border);
+}
+
 .brain-section + .brain-section { margin-top: 24px; }
 .brain-heading {
   font-size: 0.7rem;
@@ -117,6 +138,15 @@ html.brain-collapsed .brain {
 .brain-item a:hover {
   background: var(--surface);
   border-color: var(--border);
+}
+/* "resurfaced" — forgotten-yet-relevant. A faint accent-tinted left border
+   marks the item as special. Subtle, not loud: no glow, no animation. The ✦
+   glyph is added in JS. */
+.brain-item.brain-resurfaced a {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 8px;
 }
 .brain-item .brain-title {
   font-weight: 500;
@@ -196,6 +226,15 @@ header .view-link {
   flex-shrink: 0;
 }
 header .view-link:hover { text-decoration: underline; }
+/* Small, muted "notes" link — home (/) now lands on today's daily; the vault
+   list moved to /notes. Quieter than the accent-coloured view link. */
+header .notes-link {
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .notes-link:hover { color: var(--text); }
 header .status {
   font-size: 0.75rem;
   color: var(--muted);
