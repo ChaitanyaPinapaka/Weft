@@ -16,9 +16,11 @@ import (
 
 // SecretStore holds a vault's secrets — the vault key and the cloud secret-access
 // key — OUT of the plaintext config. The OS keychain (macOS Keychain, Linux
-// Secret Service, Windows Credential Manager) is preferred; a 0600 file under the
-// vault is the fallback for headless/CI hosts with no keychain. Secrets are scoped
-// per vault (by a hash of its path) so multiple vaults on one host don't collide.
+// Secret Service, Windows Credential Manager) is preferred; on a host with no
+// keychain the secrets rest in a 0600 file under the vault instead (never in the
+// plaintext config, never pushed to the bucket — .weft is excluded from sync).
+// Secrets are scoped per vault (by a hash of its path) so multiple vaults on one
+// host don't collide.
 type SecretStore interface {
 	Get(name string) (string, error) // ErrSecretNotFound if absent
 	Set(name, value string) error
@@ -40,22 +42,20 @@ func vaultID(v *vault.Vault) string {
 }
 
 // newSecretStore returns the keychain store if a trivial probe write succeeds,
-// otherwise a file store under the vault. The bool is true when the store is a
-// real OS keychain — only then do we cache the RAW vault key (the OS protects
-// it); the file fallback keeps the passphrase-wrapped keyfile instead, so a raw
-// key never lands on disk. The probe avoids surprising a headless host (no Secret
-// Service / locked keyring) with a hard failure later.
-func newSecretStore(v *vault.Vault) (SecretStore, bool) {
+// otherwise a 0600 file store under the vault. The probe avoids surprising a
+// headless host (no Secret Service / locked keyring) with a hard failure later.
+// WEFT_SECRET_STORE=file forces the file store (headless/tests).
+func newSecretStore(v *vault.Vault) SecretStore {
 	prefix := vaultID(v) + ":"
-	if os.Getenv("WEFT_SECRET_STORE") == "file" { // force the file fallback (headless/tests)
-		return fileStore{path: filepath.Join(syncDir(v), "secrets.json")}, false
+	if os.Getenv("WEFT_SECRET_STORE") == "file" {
+		return fileStore{path: filepath.Join(syncDir(v), "secrets.json")}
 	}
 	probe := prefix + "_probe"
 	if err := keyring.Set(keyringService, probe, "1"); err == nil {
 		_ = keyring.Delete(keyringService, probe)
-		return keyringStore{prefix: prefix}, true
+		return keyringStore{prefix: prefix}
 	}
-	return fileStore{path: filepath.Join(syncDir(v), "secrets.json")}, false
+	return fileStore{path: filepath.Join(syncDir(v), "secrets.json")}
 }
 
 type keyringStore struct{ prefix string }

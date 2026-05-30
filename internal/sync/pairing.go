@@ -20,12 +20,17 @@ import (
 // The new device (initiator) and an already-enrolled device (responder) each
 // generate an ephemeral X25519 keypair and exchange public keys via the bucket.
 // Both derive the same shared secret (DH), and from it a pairing key that seals
-// the vault key for the hop. A 6-digit short authentication string (SAS) over the
-// ordered transcript of both public keys is shown on both screens; the human
-// compares them out-of-band. A man-in-the-middle (including the cloud) that
-// substitutes a public key derives a different SAS on each side, so the codes
-// won't match and the user aborts — the standard SAS defence, no shared password
-// needed on the wire.
+// the vault key for the hop. A short authentication string (SAS) is shown on both
+// screens; the human compares them out-of-band, and the responder seals the key
+// only after that match is confirmed.
+//
+// CRITICAL: the SAS is short, so it would be GRINDABLE by an active man-in-the-
+// middle that picks its substituted keys AFTER seeing the honest ones — it could
+// brute-force keys until both screens show the same code. The defence is a
+// commit-reveal nonce round (see pairing_flow.go): each side commits its nonce
+// before learning the other's, so neither the honest parties nor a MITM can adapt
+// a nonce to a target SAS. The SAS therefore binds at ~10^-8 per attempt, not
+// grindable. Do NOT drop the commitment or the nonces from the SAS.
 
 // pairKeypair is an ephemeral X25519 keypair for one pairing exchange.
 type pairKeypair struct {
@@ -64,14 +69,29 @@ func pairKey(priv, peerPub, initiatorPub, responderPub [32]byte) ([]byte, error)
 	return key, nil
 }
 
-// pairSAS is the 6-digit short authentication string over the ordered transcript.
-// Identical on both ends iff both saw the same two public keys.
-func pairSAS(initiatorPub, responderPub [32]byte) string {
+// pairSAS is the 8-digit short authentication string over both public keys AND
+// both nonces. Identical on both ends iff both saw the same keys+nonces. Because
+// each side commits its nonce before learning the other's (pairing_flow.go), the
+// SAS can't be ground to a target — 8 digits caps a MITM at ~10^-8 per run.
+func pairSAS(initiatorPub, responderPub [32]byte, na, nb []byte) string {
 	h, _ := blake2b.New256([]byte("weft/v1 pairing sas"))
 	h.Write(initiatorPub[:])
 	h.Write(responderPub[:])
+	h.Write(na)
+	h.Write(nb)
 	sum := h.Sum(nil)
-	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(sum[:4])%1_000_000)
+	return fmt.Sprintf("%08d", binary.BigEndian.Uint64(sum[:8])%100_000_000)
+}
+
+// commitNonce binds a committer's public key + nonce. The committer publishes it
+// before learning the peer's nonce and reveals the nonce later; the peer checks
+// the reveal against this commitment, so the committer can't change its nonce
+// after seeing the peer's — the anti-grind guarantee for the SAS.
+func commitNonce(pub [32]byte, nonce []byte) []byte {
+	h, _ := blake2b.New256([]byte("weft/v1 pairing commit"))
+	h.Write(pub[:])
+	h.Write(nonce)
+	return h.Sum(nil)
 }
 
 // sealVaultKey wraps the vault key under the pairing key for the bucket hop.

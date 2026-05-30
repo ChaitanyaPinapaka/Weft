@@ -163,8 +163,7 @@ func JoinWithKey(v *vault.Vault, cfg Config, vk VaultKey) (*Engine, error) {
 // desktop with an unlocked keychain unlocks the vault with no passphrase prompt.
 // Returns ErrNeedPassphrase when no key is cached (headless / file-fallback host).
 func OpenLocal(v *vault.Vault) (*Engine, error) {
-	store, _ := newSecretStore(v)
-	vk, err := loadVaultKey(store)
+	vk, err := loadVaultKey(newSecretStore(v))
 	if err != nil {
 		return nil, ErrNeedPassphrase
 	}
@@ -183,22 +182,17 @@ func OpenLocal(v *vault.Vault) (*Engine, error) {
 // must fall back to passphrase-based Open.
 var ErrNeedPassphrase = errors.New("sync: no cached vault key — passphrase required")
 
-// persistSecrets moves the secrets out of the plaintext config: the cloud secret
-// access key always, and the raw vault key only into a real OS keychain (the file
-// fallback keeps the passphrase-wrapped keyfile instead).
+// persistSecrets moves the secrets out of the plaintext config into the secret
+// store (OS keychain, or a 0600 file on a keychain-less host): the cloud secret
+// access key and the vault key, so the device unlocks without a passphrase.
 func persistSecrets(v *vault.Vault, cfg Config, vk VaultKey) error {
-	store, durable := newSecretStore(v)
+	store := newSecretStore(v)
 	if cfg.SecretAccessKey != "" {
 		if err := store.Set(secretCloud, cfg.SecretAccessKey); err != nil {
 			return err
 		}
 	}
-	if durable {
-		if err := storeVaultKey(store, vk); err != nil {
-			return err
-		}
-	}
-	return nil
+	return storeVaultKey(store, vk)
 }
 
 // Open loads an already-configured vault's engine, unwrapping the vault key
@@ -257,10 +251,8 @@ func LoadConfig(v *vault.Vault) (Config, error) {
 		return cfg, err
 	}
 	if cfg.SecretAccessKey == "" {
-		if store, _ := newSecretStore(v); store != nil {
-			if s, err := store.Get(secretCloud); err == nil {
-				cfg.SecretAccessKey = s
-			}
+		if s, err := newSecretStore(v).Get(secretCloud); err == nil {
+			cfg.SecretAccessKey = s
 		}
 	}
 	return cfg, nil
@@ -325,7 +317,13 @@ func writeConfig(dir string, cfg Config, keyfile []byte) error {
 		return err
 	}
 	if keyfile == nil {
-		return nil // pairing/recovery: no passphrase keyfile, the key is cached instead
+		// Pairing/recovery: the key is cached in the secret store, not wrapped on
+		// disk. Remove any stale keyfile from a prior enrollment so re-enrolling
+		// (e.g. a key rotation) invalidates the previously-wrapped key on disk.
+		if err := os.Remove(filepath.Join(dir, keyfileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
 	}
 	return os.WriteFile(filepath.Join(dir, keyfileName), keyfile, 0o600)
 }

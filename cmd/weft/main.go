@@ -428,8 +428,16 @@ func runSync(args []string) error {
 
 	// recover: rebuild a vault on a fresh device from the recovery phrase + cloud flags.
 	if sub == "recover" {
+		if phrase == "" { // avoid the recovery phrase (== the raw key) on argv / in shell history
+			phrase = os.Getenv("WEFT_RECOVERY_PHRASE")
+		}
 		if phrase == "" {
-			return errors.New("--phrase is required (your 24-word recovery phrase, quoted)")
+			fmt.Print("Enter your 24-word recovery phrase: ")
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			phrase = strings.TrimSpace(line)
+		}
+		if phrase == "" {
+			return errors.New("a recovery phrase is required (stdin, WEFT_RECOVERY_PHRASE, or --phrase)")
 		}
 		vk, err := syncpkg.VaultKeyFromMnemonic(phrase)
 		if err != nil {
@@ -501,15 +509,26 @@ func runSync(args []string) error {
 		if err != nil {
 			return err
 		}
-		sas, finalize, err := syncpkg.ApprovePairing(be, positional[0], vk)
+		a, err := syncpkg.BeginApprove(be, positional[0], vk)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Check this code matches the NEW device's screen:  %s\n", sas)
+		fmt.Println("Waiting for the new device…")
+		for {
+			ok, err := a.AwaitReveal()
+			if err != nil {
+				return err
+			}
+			if ok {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		fmt.Printf("Check this code matches the NEW device's screen:  %s\n", a.SAS())
 		if !confirm("Do the two codes match?") {
 			return errors.New("aborted — codes did not match")
 		}
-		if err := finalize(); err != nil {
+		if err := a.Finalize(); err != nil {
 			return err
 		}
 		fmt.Println("Approved — the new device will finish automatically.")
