@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"weft/internal/noteid"
 	"weft/internal/vault"
@@ -85,6 +87,10 @@ type state struct {
 	// silently dropped. It's also raised from any higher self-counter observed
 	// in a peer's manifest (proof we published more than this restored state knows).
 	MaxSelf uint64 `json:"max_self"`
+	// SignKey is this device's Ed25519 private key, used to sign our HEADs. It
+	// never leaves the device; the matching public key is published (sealed) in
+	// the device registry. (P5 moves the private key to the OS keychain.)
+	SignKey []byte `json:"sign_key,omitempty"`
 }
 
 // Engine converges one vault against one backend. All devices run identical
@@ -98,28 +104,37 @@ type Engine struct {
 	dir   string // <vault>/.weft/sync
 	blobC Cipher
 	manC  Cipher
+	regC  Cipher // seals device-registry records under the vault key
+
+	signPriv   ed25519.PrivateKey
+	registry   map[DeviceID]ed25519.PublicKey // peers' verifying keys, refreshed each pull
+	registered bool                           // wrote our device record this process
 }
 
 // New loads (or initializes) a PLAINTEXT engine (nop ciphers) — P1 behavior,
 // used by tests and the filesystem self-host before keys are set up.
 func New(v *vault.Vault, be Backend) (*Engine, error) {
-	return newEngine(v, be, nopCipher{}, nopCipher{})
+	return newEngine(v, be, nopCipher{}, nopCipher{}, nopCipher{})
 }
 
-// NewEncrypted loads an E2EE engine: blobs and manifests are sealed under
-// subkeys of vk, so the backend (the user's cloud) sees only ciphertext and
-// ciphertext-derived names. Every device with the same vk converges; the cloud
-// can decrypt nothing.
+// NewEncrypted loads an E2EE engine: blobs, manifests, and the device registry
+// are sealed under subkeys of vk, so the backend (the user's cloud) sees only
+// ciphertext and ciphertext-derived names. Every device with the same vk
+// converges; the cloud can decrypt nothing.
 func NewEncrypted(v *vault.Vault, be Backend, vk VaultKey) (*Engine, error) {
-	return newEngine(v, be, newCipher(vk, "weft/v1 blob"), newCipher(vk, "weft/v1 manifest"))
+	return newEngine(v, be,
+		newCipher(vk, "weft/v1 blob"),
+		newCipher(vk, "weft/v1 manifest"),
+		newCipher(vk, "weft/v1 registry"))
 }
 
-func newEngine(v *vault.Vault, be Backend, blobC, manC Cipher) (*Engine, error) {
+func newEngine(v *vault.Vault, be Backend, blobC, manC, regC Cipher) (*Engine, error) {
 	dir := filepath.Join(v.Root, ".weft", "sync")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	e := &Engine{v: v, be: be, dir: dir, blobC: blobC, manC: manC}
+	e := &Engine{v: v, be: be, dir: dir, blobC: blobC, manC: manC, regC: regC,
+		registry: map[DeviceID]ed25519.PublicKey{}}
 	if data, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
 		if err := json.Unmarshal(data, &e.st); err != nil {
 			return nil, fmt.Errorf("sync: corrupt state: %w", err)
@@ -131,6 +146,17 @@ func newEngine(v *vault.Vault, be Backend, blobC, manC Cipher) (*Engine, error) 
 			return nil, err
 		}
 		e.st.Device = DeviceID(hex.EncodeToString(b[:]))
+	}
+	// Mint this device's Ed25519 signing key once; it persists in state.json.
+	if len(e.st.SignKey) == ed25519.PrivateKeySize {
+		e.signPriv = ed25519.PrivateKey(e.st.SignKey)
+	} else {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		e.signPriv = priv
+		e.st.SignKey = priv
 	}
 	if e.st.LastSeen == nil {
 		e.st.LastSeen = map[DeviceID]uint64{}
@@ -168,8 +194,14 @@ func (e *Engine) recoverSelf() error {
 	if err != nil {
 		return nil // never published, or a transient backend error — nothing to heal
 	}
-	var gen uint64
-	fmt.Sscanf(string(headBytes), "%d", &gen)
+	var hd signedHead
+	if json.Unmarshal(headBytes, &hd) != nil {
+		return nil
+	}
+	if !hd.verify(e.signPriv.Public().(ed25519.PublicKey), e.st.Device) {
+		return nil // a cloud-forged self-HEAD can't inflate our generation
+	}
+	gen := hd.Gen
 	if gen <= e.st.Gen {
 		return nil // our local view is already at/ahead of what we published
 	}
@@ -202,6 +234,7 @@ type Result struct {
 	Pushed         int
 	Applied        int // remote changes written locally (fast-forwards)
 	ConflictCopies []string
+	Rejected       int // peer HEADs dropped: bad signature, unknown device, or HEAD/manifest mismatch
 }
 
 // Sync runs one full convergence cycle: capture local edits, push, pull peers,
@@ -327,16 +360,77 @@ func (e *Engine) push(res *Result) error {
 	if err := e.be.Put(fmt.Sprintf("manifest/%s/%d.json", e.st.Device, e.st.Gen), snapshot); err != nil {
 		return err
 	}
-	if err := e.be.Put(fmt.Sprintf("manifest/%s/HEAD", e.st.Device), []byte(fmt.Sprintf("%d", e.st.Gen))); err != nil {
+	if err := e.register(); err != nil { // publish our verifying key before the HEAD that needs it
+		return err
+	}
+	// HEAD is signed and bound to the exact manifest bytes, and flipped LAST.
+	hd := signHead(e.signPriv, e.st.Device, e.st.Gen, hashBytes(snapshot))
+	hb, err := json.Marshal(hd)
+	if err != nil {
+		return err
+	}
+	if err := e.be.Put(fmt.Sprintf("manifest/%s/HEAD", e.st.Device), hb); err != nil {
 		return err
 	}
 	res.Pushed = len(e.st.Manifest)
 	return nil
 }
 
+// register publishes this device's signing pubkey (sealed) so peers can verify
+// our HEADs. Idempotent within a process; the per-device key means no write race.
+func (e *Engine) register() error {
+	if e.registered {
+		return nil
+	}
+	rec := deviceRecord{
+		DeviceID: e.st.Device,
+		SignPub:  e.signPriv.Public().(ed25519.PublicKey),
+		Created:  time.Now().Unix(),
+	}
+	plain, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if err := e.be.Put(deviceKey(e.st.Device), e.regC.Seal(plain)); err != nil {
+		return err
+	}
+	e.registered = true
+	return nil
+}
+
+// refreshRegistry loads every device's sealed record into the verifying-key map.
+// Records that don't decrypt with our key (cloud-injected or corrupt) are ignored.
+func (e *Engine) refreshRegistry() error {
+	keys, err := e.be.List("meta/devices/")
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		sealed, err := e.be.Get(k)
+		if err != nil {
+			continue
+		}
+		plain, err := e.regC.Open(sealed)
+		if err != nil {
+			continue // not sealed under our vault key → not a legitimate device
+		}
+		var rec deviceRecord
+		if json.Unmarshal(plain, &rec) != nil {
+			continue
+		}
+		if len(rec.SignPub) == ed25519.PublicKeySize {
+			e.registry[rec.DeviceID] = ed25519.PublicKey(rec.SignPub)
+		}
+	}
+	return nil
+}
+
 // pull folds every peer device's latest manifest into ours and applies the
 // resulting changes to disk.
 func (e *Engine) pull(res *Result) error {
+	if err := e.refreshRegistry(); err != nil {
+		return err
+	}
 	keys, err := e.be.List("manifest/")
 	if err != nil {
 		return err
@@ -357,13 +451,28 @@ func (e *Engine) pull(res *Result) error {
 		if err != nil {
 			continue
 		}
-		var gen uint64
-		fmt.Sscanf(string(headBytes), "%d", &gen)
-		if gen <= e.st.LastSeen[dev] {
-			continue // already folded
+		var hd signedHead
+		if json.Unmarshal(headBytes, &hd) != nil {
+			res.Rejected++
+			continue // unparseable HEAD
 		}
-		manBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/%d.json", dev, gen))
+		pub, ok := e.registry[dev]
+		if !ok {
+			continue // no verifying key for this device yet — appears once it registers
+		}
+		if !hd.verify(pub, dev) {
+			res.Rejected++ // forged or tampered HEAD
+			continue
+		}
+		if hd.Gen <= e.st.LastSeen[dev] {
+			continue // already folded, or a rolled-back HEAD below our high-water mark
+		}
+		manBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/%d.json", dev, hd.Gen))
 		if err != nil {
+			continue
+		}
+		if hashBytes(manBytes) != hd.ManifestHash {
+			res.Rejected++ // HEAD points at a manifest it didn't sign
 			continue
 		}
 		plain, err := e.manC.Open(manBytes)
@@ -379,7 +488,7 @@ func (e *Engine) pull(res *Result) error {
 				return err
 			}
 		}
-		e.st.LastSeen[dev] = gen
+		e.st.LastSeen[dev] = hd.Gen
 	}
 	return nil
 }
