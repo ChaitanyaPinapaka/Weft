@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"weft/internal/noteid"
 	"weft/internal/vault"
@@ -155,6 +154,46 @@ func (e *Engine) nextSelf() uint64 {
 	return e.st.MaxSelf
 }
 
+// recoverSelf heals this device's high-water marks (Gen + MaxSelf) from its OWN
+// published manifest in the backend, BEFORE scanLocal mints any new counter or
+// push picks a generation. Restoring an older state.json backup rolls both back;
+// without this, scanLocal would issue a self-counter at or below one already
+// published (which a peer reads as causally old and silently drops), and push
+// would regress HEAD over newer generations. The peer-fold raise in foldEntry
+// runs too late (after push) and never consults our own manifest (pull skips
+// self). A no-op once we're current (the common path): one HEAD read, and the
+// full manifest is fetched only when the backend proves we're behind.
+func (e *Engine) recoverSelf() error {
+	headBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/HEAD", e.st.Device))
+	if err != nil {
+		return nil // never published, or a transient backend error — nothing to heal
+	}
+	var gen uint64
+	fmt.Sscanf(string(headBytes), "%d", &gen)
+	if gen <= e.st.Gen {
+		return nil // our local view is already at/ahead of what we published
+	}
+	e.st.Gen = gen // don't reissue generations we've already published
+	manBytes, err := e.be.Get(fmt.Sprintf("manifest/%s/%d.json", e.st.Device, gen))
+	if err != nil {
+		return nil
+	}
+	plain, err := e.manC.Open(manBytes)
+	if err != nil {
+		return nil
+	}
+	var mine map[string]Entry
+	if json.Unmarshal(plain, &mine) != nil {
+		return nil
+	}
+	for _, en := range mine {
+		if c := en.VV[e.st.Device]; c > e.st.MaxSelf {
+			e.st.MaxSelf = c
+		}
+	}
+	return nil
+}
+
 // Device returns this engine's device id.
 func (e *Engine) Device() DeviceID { return e.st.Device }
 
@@ -171,6 +210,9 @@ type Result struct {
 // on different devices converge to the same vault.
 func (e *Engine) Sync() (Result, error) {
 	var res Result
+	if err := e.recoverSelf(); err != nil {
+		return res, err
+	}
 	if err := e.scanLocal(); err != nil {
 		return res, err
 	}
@@ -419,12 +461,14 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 }
 
 // conflict resolves a concurrent divergence DETERMINISTICALLY so that two
-// devices which both detect the same conflict converge to exactly one copy
-// (the P1 limitation). The smaller blob id wins the canonical path; the larger
-// becomes a conflict-copy whose WeftID + path are a pure function of
-// (originalWeftID, sorted blob pair) — identical on every device. No data is
-// lost: both versions always exist as first-class notes. Same-content "conflict"
-// (identical bytes under concurrent VVs) just merges the version vectors.
+// devices which both detect the same conflict converge to EXACTLY the same vault
+// (the P1 limitation). The winner is a pure function of the two entries — smaller
+// blob id wins, ties broken by smaller path — and the winner brings ITS OWN path
+// as canonical. Sourcing the canonical path from the local entry would never
+// converge when a rename was concurrent with the edit (each device would keep its
+// own filename). The loser becomes a conflict-copy whose WeftID + path are a pure
+// function of (originalWeftID, sorted blob pair, winner path), identical on every
+// device. No data is lost: both versions always exist as first-class notes.
 func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	merged := maxVV(l.VV, r.VV)
 	if l.Deleted && r.Deleted { // both tombstoned — stay deleted, just merge VVs
@@ -432,42 +476,64 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 		e.st.Manifest[id] = l
 		return nil
 	}
-	if l.BlobID == r.BlobID && l.Deleted == r.Deleted { // identical state — not a divergence
+
+	// Deterministic winner, independent of which side is local: smaller blob id,
+	// then smaller path. Both devices pick the same winner and the same winPath.
+	win, lose := l, r
+	if r.BlobID < l.BlobID || (r.BlobID == l.BlobID && r.Path < l.Path) {
+		win, lose = r, l
+	}
+
+	// Identical content, same deleted-state — not a content divergence. But the
+	// paths may differ (a concurrent rename to two names): converge to the winner's
+	// canonical path and trash our stale local file. No conflict-copy needed.
+	if win.BlobID == lose.BlobID && l.Deleted == r.Deleted {
+		if l.Path != win.Path {
+			content, err := e.getBlob(win.BlobID)
+			if err != nil {
+				return nil // blob not ready; retry next pull, manifest path unchanged
+			}
+			if err := e.v.Write(win.Path, content); err != nil {
+				return err
+			}
+			_ = e.v.Trash(l.Path)
+			res.Applied++
+		}
+		l.Path = win.Path
 		l.VV = merged
 		e.st.Manifest[id] = l
 		return nil
 	}
 
-	winBlob, loseBlob := l.BlobID, r.BlobID
-	if loseBlob < winBlob {
-		winBlob, loseBlob = loseBlob, winBlob // canonical: smaller id wins the main path
-	}
-	winContent, err := e.getBlob(winBlob)
+	winContent, err := e.getBlob(win.BlobID)
 	if err != nil {
 		return nil // a blob isn't uploaded yet; retry next pull
 	}
-	loseContent, err := e.getBlob(loseBlob)
+	loseContent, err := e.getBlob(lose.BlobID)
 	if err != nil {
 		return nil
 	}
 
-	// Main path takes the deterministic winner (may overwrite local — but the
-	// local version is preserved as the copy below, so nothing is lost).
-	if e.st.Manifest[id].BlobID != winBlob {
-		if err := e.v.Write(l.Path, winContent); err != nil {
-			return err
-		}
+	// Winner takes the canonical path (idempotent write). If our local copy lived
+	// at a different path (a concurrent rename), trash the stale file so the winner
+	// isn't left behind as a duplicate.
+	if err := e.v.Write(win.Path, winContent); err != nil {
+		return err
+	}
+	if l.Path != "" && l.Path != win.Path {
+		_ = e.v.Trash(l.Path)
 	}
 	e.st.Manifest[id] = Entry{
-		WeftID: id, Path: l.Path, VV: merged, BlobID: winBlob,
-		Size: int64(len(winContent)), MTime: time.Now().Unix(),
+		WeftID: id, Path: win.Path, VV: merged, BlobID: win.BlobID,
+		Size: int64(len(winContent)), MTime: win.MTime,
 	}
 
-	// The loser becomes a conflict-copy with a deterministic id + path, stamped
-	// so it's a distinct surfacing note. Both devices compute the same cid and
-	// the same stamped bytes, so the copy dedups to exactly one across the vault.
-	cid := deriveConflictID(id, winBlob, loseBlob)
-	cpath := conflictPath(l.Path, cid)
+	// The loser becomes a conflict-copy with a deterministic id + path, stamped so
+	// it's a distinct surfacing note. Both devices compute the same cid + path +
+	// stamped bytes (all pure functions of the diverging pair), so the copy dedups
+	// to exactly one across the vault.
+	cid := deriveConflictID(id, win.BlobID, lose.BlobID)
+	cpath := conflictPath(win.Path, cid)
 	stamped, err := noteid.WithWeftID(loseContent, cid)
 	if err != nil {
 		stamped = loseContent
@@ -481,7 +547,7 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	}
 	e.st.Manifest[cid] = Entry{
 		WeftID: cid, Path: cpath, VV: merged.clone(), BlobID: bid,
-		Size: int64(len(stamped)), MTime: time.Now().Unix(),
+		Size: int64(len(stamped)), MTime: lose.MTime,
 	}
 	res.ConflictCopies = append(res.ConflictCopies, cpath)
 	return nil

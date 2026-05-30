@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -140,9 +141,12 @@ func (v *Vault) Exists(rel string) bool {
 
 // Trash moves a note into the vault's .trash directory, preserving its bytes —
 // the system never hard-deletes (the never-delete invariant). A no-op if the
-// source is already gone. Any prior trash entry at the same relative path is
-// overwritten. .trash is excluded from List, so trashed notes don't surface,
-// index, or re-sync, but the bytes remain recoverable on disk.
+// source is already gone. If .trash already holds an entry at the same relative
+// path (two distinct notes that occupied the same vault path at different times),
+// the incoming one is parked under a timestamped sibling rather than clobbering
+// the existing bytes — never-delete must hold inside .trash too. .trash is
+// excluded from List, so trashed notes don't surface, index, or re-sync, but the
+// bytes remain recoverable on disk.
 func (v *Vault) Trash(rel string) error {
 	src := v.abs(rel)
 	if _, err := os.Stat(src); err != nil {
@@ -152,7 +156,10 @@ func (v *Vault) Trash(rel string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	_ = os.Remove(dst)
+	if _, err := os.Stat(dst); err == nil { // a different note already trashed at this path
+		ext := filepath.Ext(dst)
+		dst = strings.TrimSuffix(dst, ext) + ".trashed-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ext
+	}
 	return os.Rename(src, dst)
 }
 
