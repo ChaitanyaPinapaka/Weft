@@ -109,12 +109,18 @@ func (v *Vault) Write(rel string, content []byte) error {
 	if err := os.Rename(tmpName, full); err != nil {
 		return err
 	}
-	// fsync the directory so the rename itself survives a crash.
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
+	// fsync the directory so the rename itself survives a crash — and surface
+	// any error rather than reporting a save that could be lost on power loss.
+	// (Directory fsync is valid on darwin/linux, Weft's targets.)
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // Exists reports whether a note exists at rel.

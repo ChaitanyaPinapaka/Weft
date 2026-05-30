@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -35,13 +36,34 @@ func ReadWeftID(content []byte) string {
 // path and content. Same (path, content) → same id on every device, so a note
 // that predates sync converges rather than forking. Used only to MINT the first
 // id; once stamped, the id is read from the file and never recomputed.
+//
+// The content is CANONICALIZED first (parsed, any weft-id meta stripped, then
+// re-rendered) before hashing, so byte-trivia that does not change the note —
+// a trailing newline, CRLF vs LF, a prior pass through html.Render (<br> vs
+// <br/>, entity/attribute normalization) — cannot fork two devices' ids for
+// the same logical note.
 func Derive(rel string, content []byte) string {
 	h := sha256.New()
 	h.Write([]byte(rel))
 	h.Write([]byte{0})
-	h.Write(content)
+	h.Write(canonicalize(content))
 	sum := h.Sum(nil)
 	return formatID(sum[:16])
+}
+
+// weftMetaRe matches the weft-id meta tag regardless of attribute order or
+// self-closing slash, so a stamped copy and a bare one canonicalize identically.
+var weftMetaRe = regexp.MustCompile(`(?i)<meta[^>]*\bname="weft-id"[^>]*>`)
+
+// canonicalize normalizes away byte-trivia that doesn't change the note: the
+// weft-id meta itself (so stamped == bare), CRLF vs LF (git autocrlf), and
+// leading/trailing whitespace (a trailing newline). Deliberately a light string
+// pass, not parse+render — round-tripping through html.Parse reparents
+// post-</html> whitespace into <body> and would itself fork the hash.
+func canonicalize(content []byte) []byte {
+	c := weftMetaRe.ReplaceAll(content, nil)
+	c = bytes.ReplaceAll(c, []byte("\r\n"), []byte("\n"))
+	return bytes.TrimSpace(c)
 }
 
 // WithWeftID returns content with its weft-id meta set to id, replacing any

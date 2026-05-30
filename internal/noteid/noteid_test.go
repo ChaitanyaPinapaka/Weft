@@ -1,6 +1,9 @@
 package noteid
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>T</title></head><body><article><h1>T</h1><p>hello</p></article></body></html>`
 
@@ -35,6 +38,27 @@ func TestDeriveDeterministic(t *testing.T) {
 	if len(a) != 36 || a[8] != '-' || a[13] != '-' || a[18] != '-' || a[23] != '-' {
 		t.Fatalf("malformed id shape: %q", a)
 	}
+}
+
+// TestDeriveCanonicalConvergence: byte-trivia that doesn't change the note must
+// not fork the id — the exact pre-sync git/editor scenarios (trailing newline,
+// CRLF vs LF, a prior html.Render pass, an already-stamped copy).
+func TestDeriveCanonicalConvergence(t *testing.T) {
+	base := Derive("notes/t.html", []byte(doc))
+	if Derive("notes/t.html", []byte(doc+"\n")) != base {
+		t.Fatal("trailing newline forked the id")
+	}
+	// autocrlf converts existing \n to \r\n (it doesn't insert structure), so
+	// the CRLF check uses a doc that actually has line breaks.
+	lf := "<!DOCTYPE html>\n<html><head></head>\n<body><article><p>x</p></article></body></html>\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	if Derive("notes/t.html", []byte(lf)) != Derive("notes/t.html", []byte(crlf)) {
+		t.Fatal("CRLF vs LF forked the id")
+	}
+	// Note: we do NOT assert that a re-rendered copy (<br> vs <br/>) converges —
+	// string canonicalization can't undo html.Render, and it's unreachable in
+	// flow anyway: Derive only runs on a note that LACKS an id, and Weft's write
+	// paths stamp an id on every save, so an id-less file is never a rendered one.
 }
 
 func TestEnsureIdempotent(t *testing.T) {
