@@ -77,6 +77,24 @@ func TestCoAccessCountDistinct(t *testing.T) {
 	}
 }
 
+func TestPruneAccessLog(t *testing.T) {
+	ix := newIndex(t)
+	_ = ix.LogAccess("a.html", 100)
+	_ = ix.LogAccess("a.html", 500)
+	_ = ix.LogAccess("b.html", 900)
+
+	if err := ix.PruneAccessLog(500); err != nil { // drop ts < 500
+		t.Fatal(err)
+	}
+	all, _ := ix.AllAccessHistory()
+	if !reflect.DeepEqual(all["a.html"], []int64{500}) {
+		t.Fatalf("a.html should keep only ts>=500, got %v", all["a.html"])
+	}
+	if !reflect.DeepEqual(all["b.html"], []int64{900}) {
+		t.Fatalf("b.html should be untouched, got %v", all["b.html"])
+	}
+}
+
 func TestRecentAccesses(t *testing.T) {
 	ix := newIndex(t)
 	_ = ix.LogAccess("a.html", 100)

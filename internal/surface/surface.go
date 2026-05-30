@@ -152,6 +152,12 @@ func BaseLevel(accesses []int64, nowUnix int64, p Params) float64 {
 // before their first open. The synthetic timestamp lives only in the returned
 // slice — it is never written to the access log. When real accesses exist they
 // are the truth and we leave them untouched.
+//
+// Known trade-off: a bulk mtime rewrite (git checkout, rsync, touch *.html)
+// homogenizes the base level of every never-opened note to ~now, flattening the
+// cold tail's recency ordering until each note is individually opened. Set
+// p.SeedMtime=false to disable, or log a creation access at note-create time
+// instead. Acceptable for v0.1 — real reads dominate and noise breaks ties.
 func SeedMtime(accesses []int64, mtime time.Time, p Params) []int64 {
 	if !p.SeedMtime || mtime.IsZero() || len(accesses) > 0 {
 		return accesses
@@ -280,18 +286,17 @@ func RankDefault(focus Candidate, sources []Source, candidates []Candidate, now 
 	return Rank(focus, sources, candidates, now.Unix(), p, NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian))
 }
 
-// OnThisDay returns candidates whose ModTime falls within ±OnThisDayWindowDays
+// OnThisDay returns candidates whose ModTime falls within ±p.OnThisDayWindowDays
 // of `now`'s month/day in any strictly PRIOR calendar year, most recent first.
 // The forgetting curve inverted: surface what the brain would have dropped but
 // the calendar makes relevant again. Caller excludes the current note.
-func OnThisDay(candidates []Candidate, now time.Time) []Candidate {
-	const window = 3
+func OnThisDay(candidates []Candidate, now time.Time, p Params) []Candidate {
 	out := make([]Candidate, 0)
 	for _, c := range candidates {
 		if c.ModTime.IsZero() || c.ModTime.Year() >= now.Year() {
 			continue
 		}
-		if !withinAnniversaryWindow(c.ModTime, now, window) {
+		if !withinAnniversaryWindow(c.ModTime, now, p.OnThisDayWindowDays) {
 			continue
 		}
 		out = append(out, c)

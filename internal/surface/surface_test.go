@@ -255,7 +255,7 @@ func TestOnThisDay(t *testing.T) {
 		{Path: "thisyr.html", ModTime: time.Date(2026, 5, 25, 9, 0, 0, 0, time.UTC)}, // same year → excluded
 		{Path: "far.html", ModTime: time.Date(2024, 8, 1, 9, 0, 0, 0, time.UTC)},     // outside window
 	}
-	got := OnThisDay(cands, now)
+	got := OnThisDay(cands, now, DefaultParams())
 	if len(got) != 2 {
 		t.Fatalf("want 2 anniversary notes, got %d (%v)", len(got), paths(got))
 	}

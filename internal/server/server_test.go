@@ -1,0 +1,171 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"weft/internal/index"
+	"weft/internal/surface"
+	"weft/internal/vault"
+)
+
+// surfaceFixture builds a small vault + index for exercising surfaceHandler:
+// linker.html → focus.html (a backlink), plus an orphan and two session notes.
+func surfaceFixture(t *testing.T) (*vault.Vault, *index.Index) {
+	t.Helper()
+	v, err := vault.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, body string) {
+		if err := v.Write(rel, []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("focus.html", `<article><h1>Focus</h1><p>focus note</p></article>`)
+	write("linker.html", `<article><h1>Linker</h1><p>see <a href="focus.html">focus</a></p></article>`)
+	write("orphan.html", `<article><h1>Orphan</h1><p>unrelated quarterly tax filing</p></article>`)
+	write("earlier.html", `<article><h1>Earlier</h1><p>touched earlier this session</p></article>`)
+	write("stale.html", `<article><h1>Stale</h1><p>from a previous session</p></article>`)
+
+	ix, err := index.Open(v.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ix.Close() })
+	notes, _ := v.List()
+	for _, n := range notes {
+		content, _ := v.Read(n.Path)
+		if err := ix.Upsert(index.Note{
+			Path: n.Path, Title: n.Name, Body: string(content),
+			Links: index.ParseLinks(content), ModTime: n.ModTime, Size: n.Size,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return v, ix
+}
+
+type surfaceResp struct {
+	Current   string           `json:"current"`
+	Backlinks []string         `json:"backlinks"`
+	Scored    []surface.Scored `json:"scored"`
+	Trail     []string         `json:"trail"`
+}
+
+// callSurface drives surfaceHandler directly with embeddings OFF (emb=nil).
+func callSurface(t *testing.T, v *vault.Vault, ix *index.Index, path string) surfaceResp {
+	t.Helper()
+	h := surfaceHandler(v, ix, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/surface/"+path, nil)
+	req.SetPathValue("path", path)
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp surfaceResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp
+}
+
+// TestSurfaceHandlerBacklinkEmbeddingsOff verifies the engine wiring with
+// embeddings disabled: a backlinked note surfaces via spreading (Spread>0,
+// "backlink" reason), the focus is excluded, and NO semantic reason ever fires
+// (all cosines are 0 without an embedder).
+func TestSurfaceHandlerBacklinkEmbeddingsOff(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	resp := callSurface(t, v, ix, "focus.html")
+
+	var linker *surface.Scored
+	for i := range resp.Scored {
+		sc := &resp.Scored[i]
+		if sc.Path == "focus.html" {
+			t.Fatal("focus must be excluded from its own surface results")
+		}
+		if sc.Path == "linker.html" {
+			linker = sc
+		}
+		for _, r := range sc.Reasons {
+			if r == "semantic" {
+				t.Fatalf("embeddings off: no semantic reason expected, got one on %s", sc.Path)
+			}
+		}
+	}
+	if linker == nil || linker.Spread <= 0 {
+		t.Fatalf("linker should surface with Spread>0 from the backlink, got %+v", linker)
+	}
+	hasBacklink := false
+	for _, r := range linker.Reasons {
+		if r == "backlink" {
+			hasBacklink = true
+		}
+	}
+	if !hasBacklink {
+		t.Fatalf("linker should carry a backlink reason, got %v", linker.Reasons)
+	}
+
+	found := false
+	for _, b := range resp.Backlinks {
+		if b == "linker.html" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("backlinks should list linker.html, got %v", resp.Backlinks)
+	}
+}
+
+// TestSurfaceHandlerSessionGapWalk verifies the session reconstruction: a note
+// touched within the 30-min gap joins the trail; one touched an hour ago (past
+// the gap) does not. The focus is always trail[0].
+func TestSurfaceHandlerSessionGapWalk(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	now := time.Now().Unix()
+	_ = ix.LogAccess("earlier.html", now-60)  // 1 min ago — in session
+	_ = ix.LogAccess("stale.html", now-60*60) // 1 hour ago — past the 30-min gap
+
+	resp := callSurface(t, v, ix, "focus.html")
+	if len(resp.Trail) == 0 || resp.Trail[0] != "focus.html" {
+		t.Fatalf("trail[0] must be the focus, got %v", resp.Trail)
+	}
+	inTrail := map[string]bool{}
+	for _, p := range resp.Trail {
+		inTrail[p] = true
+	}
+	if !inTrail["earlier.html"] {
+		t.Fatalf("an in-session note must join the trail, got %v", resp.Trail)
+	}
+	if inTrail["stale.html"] {
+		t.Fatalf("a note past the session gap must NOT join the trail, got %v", resp.Trail)
+	}
+}
+
+// TestSurfaceHandlerSelfSourceNoBoost is the lens-2 regression at the HTTP
+// layer: a note that is itself an earlier-session source must not receive a
+// fabricated semantic boost from its cosine-1.0 self-edge. With embeddings off
+// the cleanest assertion is that the in-session note never carries a "semantic"
+// reason (the self-edge, if not skipped, would be the only way one could).
+func TestSurfaceHandlerSelfSourceNoBoost(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	now := time.Now().Unix()
+	_ = ix.LogAccess("earlier.html", now-60) // earlier.html is both a source and a candidate
+
+	resp := callSurface(t, v, ix, "focus.html")
+	for i := range resp.Scored {
+		sc := &resp.Scored[i]
+		if sc.Path != "earlier.html" {
+			continue
+		}
+		for _, r := range sc.Reasons {
+			if r == "semantic" {
+				t.Fatalf("earlier.html must not get a self-edge semantic boost, reasons=%v", sc.Reasons)
+			}
+		}
+	}
+}

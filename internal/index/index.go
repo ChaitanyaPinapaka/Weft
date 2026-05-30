@@ -286,9 +286,20 @@ func (ix *Index) AllEmbeddings() (map[string][]byte, error) {
 }
 
 // LogAccess records that `path` was opened at unix time `ts`. Append-only;
-// callers may prune by ts later if the table grows.
+// bounded by PruneAccessLog (called on daemon start).
 func (ix *Index) LogAccess(path string, ts int64) error {
 	_, err := ix.db.Exec(`INSERT INTO access_log(path, ts) VALUES(?, ?)`, path, ts)
+	return err
+}
+
+// PruneAccessLog deletes access rows older than `before` (unix seconds),
+// bounding the table that the surface hot path self-joins (CoAccessCount) and
+// scans (RecentAccesses/AllAccessHistory). The access log is derived telemetry,
+// not source of truth — old entries contribute negligibly to base-level
+// activation (t^-d decays hard) so dropping them is safe. Notes are never
+// touched; only their access history is trimmed.
+func (ix *Index) PruneAccessLog(before int64) error {
+	_, err := ix.db.Exec(`DELETE FROM access_log WHERE ts < ?`, before)
 	return err
 }
 

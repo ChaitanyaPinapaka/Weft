@@ -56,6 +56,12 @@ func Run(vaultPath string) error {
 		return fmt.Errorf("initial index: %w", err)
 	}
 
+	// Bound the append-only access log so the surface hot path's self-join and
+	// scans don't grow without ceiling. Two years is far beyond where t^-d
+	// decay makes an access matter to base-level activation.
+	const accessLogRetention = 2 * 365 * 24 * time.Hour
+	_ = ix.PruneAccessLog(time.Now().Add(-accessLogRetention).Unix())
+
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
 	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
@@ -783,7 +789,7 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 
 		// (g) Explicit backlinks list + on_this_day, both unchanged in shape.
 		back, _ := ix.BacklinksTo(cur)
-		otd := surface.OnThisDay(cands, now)
+		otd := surface.OnThisDay(cands, now, p)
 		filtered := otd[:0]
 		for _, c := range otd {
 			if c.Path != cur {
