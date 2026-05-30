@@ -19,6 +19,7 @@ import (
 	"weft/internal/index"
 	"weft/internal/mcp"
 	"weft/internal/server"
+	syncpkg "weft/internal/sync"
 	"weft/internal/vault"
 )
 
@@ -33,6 +34,12 @@ Usage:
                              kinds: markdown notion bookmarks apple-notes
                              flags: --force (overwrite existing notes)
                                     -v <vault>
+  weft sync init             set up E2EE multi-device sync on your own cloud
+  weft sync join             enroll this device into an existing synced vault
+  weft sync                  run one convergence cycle (push + pull)
+                             flags: -v <vault> --passphrase <p>
+                                    --provider {r2|aws|minio|b2|fs} --bucket --endpoint
+                                    --region --access-key --secret --path-style --fs-path
 `
 
 func main() {
@@ -66,6 +73,12 @@ func main() {
 
 	case "mcp":
 		if err := runMCP(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+	case "sync":
+		if err := runSync(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -301,6 +314,88 @@ func runImport(args []string) error {
 	}
 	if imported == 0 && skipped == 0 {
 		return fmt.Errorf("nothing imported — is %s the right source path?", src)
+	}
+	return nil
+}
+
+// runSync dispatches `weft sync [init|join]` and the bare run. Flags are
+// hand-parsed (consistent with the other subcommands). The passphrase comes
+// from --passphrase or the WEFT_PASSPHRASE env var.
+func runSync(args []string) error {
+	sub := ""
+	if len(args) > 0 && (args[0] == "init" || args[0] == "join") {
+		sub, args = args[0], args[1:]
+	}
+
+	var vaultPath, passphrase string
+	cfg := syncpkg.Config{Prefix: "weft/v1"}
+	for i := 0; i < len(args); i++ {
+		next := func() string {
+			if i+1 >= len(args) {
+				return ""
+			}
+			i++
+			return args[i]
+		}
+		switch args[i] {
+		case "-v", "--vault":
+			vaultPath = next()
+		case "--passphrase":
+			passphrase = next()
+		case "--provider":
+			cfg.Provider = next()
+		case "--bucket":
+			cfg.Bucket = next()
+		case "--endpoint":
+			cfg.Endpoint = next()
+		case "--region":
+			cfg.Region = next()
+		case "--access-key":
+			cfg.AccessKeyID = next()
+		case "--secret":
+			cfg.SecretAccessKey = next()
+		case "--prefix":
+			cfg.Prefix = next()
+		case "--fs-path":
+			cfg.FSPath = next()
+		case "--path-style":
+			cfg.PathStyle = true
+		default:
+			return fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	if passphrase == "" {
+		passphrase = os.Getenv("WEFT_PASSPHRASE")
+	}
+
+	v, err := vault.New(resolveVault(vaultPath))
+	if err != nil {
+		return err
+	}
+
+	var eng *syncpkg.Engine
+	switch sub {
+	case "init":
+		eng, err = syncpkg.Init(v, cfg, passphrase)
+	case "join":
+		eng, err = syncpkg.Join(v, cfg, passphrase)
+	default:
+		eng, err = syncpkg.Open(v, passphrase)
+	}
+	if err != nil {
+		return err
+	}
+
+	res, err := eng.Sync()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sync: pushed %d, applied %d, conflicts %d\n", res.Pushed, res.Applied, len(res.ConflictCopies))
+	for _, c := range res.ConflictCopies {
+		fmt.Println("  conflict copy:", c)
+	}
+	if sub == "init" {
+		fmt.Println("initialized — other devices: `weft sync join` with the same provider flags + passphrase")
 	}
 	return nil
 }

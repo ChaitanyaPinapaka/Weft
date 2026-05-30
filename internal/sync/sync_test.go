@@ -17,6 +17,11 @@ func note(id, body string) []byte {
 		id, body))
 }
 
+func vaultTemp(t *testing.T) (*vault.Vault, error) {
+	t.Helper()
+	return vault.New(t.TempDir())
+}
+
 func mustWrite(t *testing.T, v *vault.Vault, rel string, content []byte) {
 	t.Helper()
 	if err := v.Write(rel, content); err != nil {
