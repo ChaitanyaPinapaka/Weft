@@ -65,6 +65,10 @@ CREATE TABLE IF NOT EXISTS tags (
   PRIMARY KEY (path, tag)
 );
 CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -289,6 +293,31 @@ func (ix *Index) AllEmbeddings() (map[string][]byte, error) {
 // bounded by PruneAccessLog (called on daemon start).
 func (ix *Index) LogAccess(path string, ts int64) error {
 	_, err := ix.db.Exec(`INSERT INTO access_log(path, ts) VALUES(?, ?)`, path, ts)
+	return err
+}
+
+// GetSetting returns a daemon setting by key. ok is false if absent. Settings
+// are the daemon's own mutable state (e.g. tuned surfacing weights) — kept in
+// the rebuildable index, not an external config file (CLAUDE.md: no config files).
+func (ix *Index) GetSetting(key string) (value string, ok bool, err error) {
+	row := ix.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key)
+	switch err = row.Scan(&value); err {
+	case nil:
+		return value, true, nil
+	case sql.ErrNoRows:
+		return "", false, nil
+	default:
+		return "", false, err
+	}
+}
+
+// SetSetting upserts a daemon setting.
+func (ix *Index) SetSetting(key, value string) error {
+	_, err := ix.db.Exec(
+		`INSERT INTO settings(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	)
 	return err
 }
 

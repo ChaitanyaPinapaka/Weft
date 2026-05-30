@@ -16,8 +16,38 @@
   const surfacedSectionEl = document.getElementById('brain-surfaced-section');
   const ontdEl            = document.getElementById('brain-onthisday');
   const ontdSectionEl     = document.getElementById('brain-onthisday-section');
+  const brainEl           = document.getElementById('brain');
 
   pathEl.textContent = path || '(no path — append ?path=note.html)';
+
+  // "Explain" toggle — opt-in reveal of the activation math (act/base/spread)
+  // per surfaced item. Default OFF so the panel stays calm. We toggle a class on
+  // the #brain root and keep the breakdown line always in the DOM but CSS-hidden
+  // when the class is absent; that avoids a /api/surface re-fetch on every toggle.
+  const EXPLAIN_KEY = 'weft.brain.explain';
+  let explainOn = false;
+  try { explainOn = localStorage.getItem(EXPLAIN_KEY) === '1'; } catch (e) {}
+  const explainToggleEl = document.createElement('button');
+  explainToggleEl.type = 'button';
+  explainToggleEl.className = 'brain-explain-toggle';
+  explainToggleEl.textContent = 'scores';
+  explainToggleEl.setAttribute('aria-label', 'Toggle activation scores');
+  function syncExplainToggle() {
+    brainEl.classList.toggle('brain-explain', explainOn);
+    explainToggleEl.classList.toggle('is-on', explainOn);
+    explainToggleEl.setAttribute('aria-pressed', explainOn ? 'true' : 'false');
+  }
+  explainToggleEl.addEventListener('click', () => {
+    explainOn = !explainOn;
+    try { localStorage.setItem(EXPLAIN_KEY, explainOn ? '1' : '0'); } catch (e) {}
+    syncExplainToggle();
+  });
+  // Mount next to the "Surfaced" heading so it reads as scoped to that section.
+  {
+    const surfacedHeading = surfacedSectionEl && surfacedSectionEl.querySelector('.brain-heading');
+    if (surfacedHeading) surfacedHeading.appendChild(explainToggleEl);
+  }
+  syncExplainToggle();
 
   // Edit-link is hidden until we know we have a path to hand off to the editor.
   const editLinkEl = document.getElementById('edit-link');
@@ -171,6 +201,19 @@
     return (1 - frac * (1 - MIN_TEMP_OPACITY)).toFixed(3);
   }
 
+  // Activation breakdown line, e.g. "act 2.41 · base −1.39 · spread +3.84".
+  // Uses a true minus sign for negatives and a leading "+" on spread when ≥0 so
+  // the numbers read as signed deltas. Rendered always-in-DOM; CSS hides it when
+  // the panel isn't in explain mode.
+  function signed(n) {
+    const v = (n || 0).toFixed(2);
+    return v.startsWith('-') ? '−' + v.slice(1) : '+' + v;
+  }
+  function scoresLine(it) {
+    const act = (it.Activation || 0).toFixed(2);
+    return 'act ' + act + ' · base ' + signed(it.Base) + ' · spread ' + signed(it.Spread);
+  }
+
   // Dissolving card: only render notes the current context actually activates,
   // i.e. Spread > 0 (a backlink / semantic / co-access edge fired). Base-level-
   // only notes are "recently opened" filing, not recall, so they stay in the
@@ -218,6 +261,14 @@
         }
         a.appendChild(chips);
       }
+
+      // Breakdown line lives inside the <a> as a non-interactive span so it
+      // never swallows the navigation click. Visibility is gated by the
+      // .brain-explain class on the panel root (no re-render on toggle).
+      const scores = document.createElement('span');
+      scores.className = 'brain-scores';
+      scores.textContent = scoresLine(it);
+      a.appendChild(scores);
 
       const pathSpan = document.createElement('span');
       pathSpan.className = 'brain-path';

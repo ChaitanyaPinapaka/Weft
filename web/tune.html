@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Tune</title>
+<link rel="stylesheet" href="/web/tune.css">
+</head>
+<body>
+<header>
+  <a class="home" href="/">Weft</a>
+  <a class="notes-link" href="/notes">notes</a>
+  <span class="page-title">Tune</span>
+  <span class="status" id="status" aria-live="polite">loading…</span>
+</header>
+
+<main class="shell">
+  <!-- LEFT: knobs. Rows injected by tune.js from a single PARAMS spec so the
+       label/hint/min/max/step stay co-located with the control wiring. -->
+  <section class="knobs">
+    <div class="knobs-head">
+      <h2>Weights</h2>
+      <button type="button" class="reset-btn" id="reset-btn">Reset to defaults</button>
+    </div>
+    <div class="knob-list" id="knob-list"></div>
+  </section>
+
+  <!-- RIGHT: live preview. Re-fetches /api/surface/{preview} on any change. -->
+  <section class="preview">
+    <div class="preview-head">
+      <label class="preview-pick">
+        <span class="pick-label">preview note</span>
+        <select id="preview-select"></select>
+      </label>
+      <span class="preview-state" id="preview-state">—</span>
+    </div>
+    <ol class="scored" id="scored"></ol>
+  </section>
+</main>
+
+<script src="/web/tune.js"></script>
+</body>
+</html>

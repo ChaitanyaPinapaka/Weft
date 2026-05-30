@@ -188,7 +188,29 @@ header .status.offline { color: #c0392b; }
   letter-spacing: 0.08em;
   color: var(--muted);
   margin-bottom: 10px;
+  /* Flex so the in-section "scores" toggle can sit flush right of the label.
+     Headings without a trailing button are unaffected (single text child). */
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
+/* "scores" toggle — opt-in reveal of the activation breakdown. Quiet text
+   button; brightens when on. No glow, no animation: restraint over decoration. */
+.brain-explain-toggle {
+  border: none;
+  background: none;
+  color: var(--border);
+  font-family: ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.brain-explain-toggle:hover { color: var(--muted); }
+.brain-explain-toggle.is-on { color: var(--accent); }
 .brain-body { color: var(--muted); }
 .brain-list { list-style: none; padding: 0; margin: 0; }
 .brain-item { margin-bottom: 12px; }
@@ -221,6 +243,19 @@ header .status.offline { color: #c0392b; }
   white-space: nowrap;
 }
 .brain-item .brain-path {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Activation breakdown line — always in the DOM, hidden until the panel root
+   carries .brain-explain. Mirrors .brain-path's muted monospace treatment. */
+.brain-item .brain-scores { display: none; }
+.brain-explain .brain-item .brain-scores {
   display: block;
   font-size: 0.72rem;
   color: var(--muted);

@@ -62,6 +62,9 @@ func Run(vaultPath string) error {
 	const accessLogRetention = 2 * 365 * 24 * time.Hour
 	_ = ix.PruneAccessLog(time.Now().Add(-accessLogRetention).Unix())
 
+	// Live, runtime-tunable surfacing weights (persisted in the index).
+	ps := newParamStore(ix)
+
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
 	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
@@ -74,7 +77,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /daily", dailyRedirectHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
-	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb))
+	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
@@ -84,6 +87,9 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
+	mux.HandleFunc("GET /api/params", getParamsHandler(ps))
+	mux.HandleFunc("POST /api/params", postParamsHandler(ps))
+	mux.HandleFunc("GET /tune", tuneRedirectHandler())
 	mux.HandleFunc("GET /tasks", tasksRedirectHandler())
 	mux.HandleFunc("POST /api/tasks/archive", tasksArchiveHandler(v, ix, emb))
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
@@ -673,7 +679,7 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 // notes touched earlier this session), over backlink/semantic/co-access edges.
 // Also returns the explicit backlinks list, the on_this_day anniversary array,
 // and the session "trail" (focus → earlier sources) for the thought-trail UI.
-func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, ps *paramStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cur := r.PathValue("path")
 		if !strings.HasSuffix(cur, ".html") {
@@ -688,7 +694,7 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 
 		now := time.Now()
 		nowUnix := now.Unix()
-		p := surface.DefaultParams()
+		p := ps.get()
 
 		// (a) Reconstruct the current session by gap-walking recent accesses.
 		// The focus is the source at full attention; earlier in-session notes

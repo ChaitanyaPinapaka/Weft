@@ -56,10 +56,11 @@ type surfaceResp struct {
 	Trail     []string         `json:"trail"`
 }
 
-// callSurface drives surfaceHandler directly with embeddings OFF (emb=nil).
+// callSurface drives surfaceHandler directly with embeddings OFF (emb=nil) and
+// the default param store.
 func callSurface(t *testing.T, v *vault.Vault, ix *index.Index, path string) surfaceResp {
 	t.Helper()
-	h := surfaceHandler(v, ix, nil)
+	h := surfaceHandler(v, ix, nil, newParamStore(ix))
 	req := httptest.NewRequest(http.MethodGet, "/api/surface/"+path, nil)
 	req.SetPathValue("path", path)
 	rr := httptest.NewRecorder()
@@ -118,6 +119,34 @@ func TestSurfaceHandlerBacklinkEmbeddingsOff(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("backlinks should list linker.html, got %v", resp.Backlinks)
+	}
+}
+
+// TestParamStorePersistAndClamp verifies the live-tuning store: a patch is
+// merged + clamped, persisted to the index, and reloaded by a fresh store;
+// reset restores defaults.
+func TestParamStorePersistAndClamp(t *testing.T) {
+	_, ix := surfaceFixture(t)
+	ps := newParamStore(ix)
+
+	ss := 9.0
+	tooBig := 999.0
+	got := ps.apply(paramPatch{SpreadScale: &ss, WBacklink: &tooBig})
+	if got.SpreadScale != 9.0 {
+		t.Fatalf("spread_scale should be 9, got %v", got.SpreadScale)
+	}
+	if got.WBacklink != 1.0 { // clamped from 999 to the [0,1] max
+		t.Fatalf("w_backlink should clamp to 1.0, got %v", got.WBacklink)
+	}
+
+	// A fresh store must reload the persisted value from the index.
+	if reloaded := newParamStore(ix).get(); reloaded.SpreadScale != 9.0 {
+		t.Fatalf("persisted spread_scale should reload as 9, got %v", reloaded.SpreadScale)
+	}
+
+	// Reset restores defaults.
+	if d := ps.apply(paramPatch{Reset: true}); d.SpreadScale != surface.DefaultParams().SpreadScale {
+		t.Fatalf("reset should restore default spread_scale, got %v", d.SpreadScale)
 	}
 }
 

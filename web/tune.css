@@ -1,0 +1,243 @@
+/* Tune — live weight-tuning for the ACT-R surfacing engine.
+   Shares the site palette so the chrome reads as part of Weft. Left column is
+   the knobs, right column is the ranked preview that moves as you drag. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #fafafa;
+  --surface: #ffffff;
+  --border:  #e8e8e8;
+  --text:    #1a1a1a;
+  --muted:   #888;
+  --accent:  #2563eb;
+  --radius:  6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #0f0f0f;
+    --surface: #1a1a1a;
+    --border:  #2a2a2a;
+    --text:    #e8e8e8;
+    --muted:   #666;
+    --accent:  #60a5fa;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px 24px 0;
+}
+header .home {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+header .home:hover { color: var(--accent); }
+header .notes-link {
+  font-size: 0.82rem;
+  color: var(--accent);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .notes-link:hover { text-decoration: underline; }
+header .page-title {
+  font-size: 0.95rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex: 1;
+}
+header .status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: right;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+/* Stack on narrow screens — knobs first, preview below. */
+@media (max-width: 820px) {
+  .shell { grid-template-columns: 1fr; }
+}
+
+/* --- LEFT: knobs --- */
+.knobs, .preview {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.knobs-head, .preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.knobs-head h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.reset-btn {
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.reset-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.knob-list { display: flex; flex-direction: column; gap: 14px; }
+.knob {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+.knob-label {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.knob-num {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 0.8rem;
+  width: 72px;
+  text-align: right;
+}
+.knob-range {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.knob-hint {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* --- RIGHT: preview --- */
+.preview-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.pick-label {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+#preview-select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  flex: 1;
+  min-width: 0;
+}
+.preview-state {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.scored {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.scored-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--bg);
+}
+.scored-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.scored-title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scored-act {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.scored-break {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.scored-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.reason-chip {
+  font-size: 0.68rem;
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+.scored-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 8px 2px;
+}
