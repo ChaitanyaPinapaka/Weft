@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -217,46 +218,60 @@ func (s *Server) handleSurfaceNote(_ context.Context, req mcplib.CallToolRequest
 // (and pulling embeddings into MCP would force the embed package on every
 // surface call — keep MCP cheap).
 type surfaceResult struct {
-	Current   string             `json:"current"`
-	Backlinks []string           `json:"backlinks"`
-	Scored    []surface.Scored   `json:"scored"`
+	Current   string           `json:"current"`
+	Backlinks []string         `json:"backlinks"`
+	Scored    []surface.Scored `json:"scored"`
 }
 
-// buildSurface assembles surface.Candidate list from vault.List + index
-// backlinks (both directions counted in HasBacklink) and runs surface.Rank.
-// Similarity is left at 0: embeddings live behind the optional embed package
-// and the daemon may not have populated them. The cheap, deterministic signal
-// is enough for an MCP caller.
+// buildSurface runs the ACT-R activation engine with the queried note as the
+// sole focus source (no session model over MCP). Base level comes from the
+// access log; spreading from backlink + co-access edges. Semantic similarity is
+// left at 0 — embeddings live behind the optional embed package and pulling it
+// into MCP would force the ONNX dependency on every surface call. The engine
+// degrades gracefully without it. Deterministic (zero noise) so an MCP caller
+// gets a reproducible result.
 func buildSurface(v *vault.Vault, ix *index.Index, cur string, now time.Time) (*surfaceResult, error) {
 	notes, err := v.List()
 	if err != nil {
 		return nil, err
 	}
+	p := surface.DefaultParams()
+
 	back, _ := ix.BacklinksTo(cur)
 	forward, _ := ix.LinksFrom(cur)
-
 	linked := map[string]bool{}
-	for _, p := range back {
-		linked[p] = true
+	for _, x := range back {
+		linked[x] = true
 	}
-	for _, p := range forward {
-		linked[p] = true
+	for _, x := range forward {
+		linked[x] = true
 	}
+	coCounts, _ := ix.CoAccessCount(cur, p.SessionGap)
+	hist, _ := ix.AllAccessHistory()
 
+	sources := []surface.Source{{Path: cur, Weight: p.FocusWeight}}
 	cands := make([]surface.Candidate, 0, len(notes))
 	for _, n := range notes {
+		edges := map[string]surface.EdgeSet{}
+		if n.Path != cur {
+			edges[cur] = surface.EdgeSet{
+				Backlink:      linked[n.Path],
+				CoAccessCount: coCounts[n.Path],
+			}
+		}
 		cands = append(cands, surface.Candidate{
-			Path:        n.Path,
-			Title:       n.Name,
-			ModTime:     n.ModTime,
-			HasBacklink: linked[n.Path],
+			Path:     n.Path,
+			Title:    n.Name,
+			ModTime:  n.ModTime,
+			Accesses: hist[n.Path],
+			Edges:    edges,
 		})
 	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].Path < cands[j].Path })
 
-	scored := surface.Rank(surface.Candidate{Path: cur}, cands, now)
-	const limit = 12
-	if len(scored) > limit {
-		scored = scored[:limit]
+	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, now.Unix(), p, surface.NewNoiser(0, 0, false))
+	if len(scored) > p.TopN {
+		scored = scored[:p.TopN]
 	}
 	if back == nil {
 		back = []string{}

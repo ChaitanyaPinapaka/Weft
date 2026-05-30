@@ -319,6 +319,103 @@ func (ix *Index) CoAccessed(path string, window time.Duration) ([]string, error)
 	return out, rows.Err()
 }
 
+// Access is one access-log row.
+type Access struct {
+	Path string
+	Ts   int64
+}
+
+// AccessHistory returns the ascending unix-second access timestamps for one
+// note. Empty (not error) if the note was never opened. Feeds ACT-R base-level
+// activation B_i = ln(Σ t_j^-d).
+func (ix *Index) AccessHistory(path string) ([]int64, error) {
+	rows, err := ix.db.Query(`SELECT ts FROM access_log WHERE path = ? ORDER BY ts ASC`, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var t int64
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AllAccessHistory returns every note's ascending access history in a single
+// scan. The surfacer needs base-level for every candidate at once; one query
+// beats N round-trips on the single-connection modernc DB.
+func (ix *Index) AllAccessHistory() (map[string][]int64, error) {
+	rows, err := ix.db.Query(`SELECT path, ts FROM access_log ORDER BY path, ts ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var p string
+		var t int64
+		if err := rows.Scan(&p, &t); err != nil {
+			return nil, err
+		}
+		out[p] = append(out[p], t)
+	}
+	return out, rows.Err()
+}
+
+// CoAccessCount returns, for each note co-accessed with `path` inside `window`,
+// the count of DISTINCT co-access events (candidate timestamps that fall near
+// any access of path). COUNT(DISTINCT b.ts) — not COUNT(*) — so the metric is
+// invariant to how many times `path` itself was opened; otherwise a busy focus
+// note would inflate every co-access by its own visit count.
+func (ix *Index) CoAccessCount(path string, window time.Duration) (map[string]int, error) {
+	w := int64(window.Seconds())
+	rows, err := ix.db.Query(
+		`SELECT b.path, COUNT(DISTINCT b.ts)
+		   FROM access_log a
+		   JOIN access_log b ON b.ts BETWEEN a.ts - ? AND a.ts + ?
+		  WHERE a.path = ? AND b.path <> ?
+		  GROUP BY b.path`,
+		w, w, path, path,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var p string
+		var c int
+		if err := rows.Scan(&p, &c); err != nil {
+			return nil, err
+		}
+		out[p] = c
+	}
+	return out, rows.Err()
+}
+
+// RecentAccesses returns access rows with ts >= since, most-recent first. The
+// server gap-walks this to reconstruct the current session's note sequence.
+func (ix *Index) RecentAccesses(since int64) ([]Access, error) {
+	rows, err := ix.db.Query(`SELECT path, ts FROM access_log WHERE ts >= ? ORDER BY ts DESC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Access
+	for rows.Next() {
+		var a Access
+		if err := rows.Scan(&a.Path, &a.Ts); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // Stale reports whether the on-disk note at `path` (with the given filesystem
 // mtime) is newer than what's in the index. Unknown paths are stale so the
 // startup walker indexes them.

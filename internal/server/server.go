@@ -644,9 +644,12 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 	}
 }
 
-// surfaceHandler returns the brain-panel payload: explicit backlinks plus
-// surface.Rank applied across the rest of the vault. When an embedder is
-// available, each candidate's Similarity is filled from cosine(current, c).
+// surfaceHandler returns the brain-panel payload computed by the ACT-R
+// activation engine: base-level (recency+frequency from the access log) plus
+// spreading activation from the current session's sources (the focus note and
+// notes touched earlier this session), over backlink/semantic/co-access edges.
+// Also returns the explicit backlinks list, the on_this_day anniversary array,
+// and the session "trail" (focus → earlier sources) for the thought-trail UI.
 func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cur := r.PathValue("path")
@@ -659,47 +662,110 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		back, _ := ix.BacklinksTo(cur)
-		forward, _ := ix.LinksFrom(cur)
 
-		linked := map[string]bool{}
-		for _, p := range back {
-			linked[p] = true
-		}
-		for _, p := range forward {
-			linked[p] = true
-		}
+		now := time.Now()
+		nowUnix := now.Unix()
+		p := surface.DefaultParams()
 
-		sims := candidateSimilarities(ix, cur)
-
-		coAcc := map[string]bool{}
-		if co, err := ix.CoAccessed(cur, 30*time.Minute); err == nil {
-			for _, p := range co {
-				coAcc[p] = true
+		// (a) Reconstruct the current session by gap-walking recent accesses.
+		// The focus is the source at full attention; earlier in-session notes
+		// spread with decaying attention. /note/{path} already logs every open.
+		since := nowUnix - int64(p.SessionLookback.Seconds())
+		recent, _ := ix.RecentAccesses(since) // DESC by ts
+		lastTouch := map[string]int64{cur: nowUnix}
+		sourcePaths := []string{cur}
+		prevTs := nowUnix
+		for _, a := range recent {
+			if prevTs-a.Ts > int64(p.SessionGap.Seconds()) {
+				break // crossed a session boundary
+			}
+			prevTs = a.Ts
+			if a.Path == cur {
+				continue
+			}
+			if _, seen := lastTouch[a.Path]; !seen {
+				lastTouch[a.Path] = a.Ts // DESC ⇒ first sighting is most-recent touch
+				sourcePaths = append(sourcePaths, a.Path)
 			}
 		}
 
+		// (b) Attention weights: focus pinned, earlier sources decayed+normalized.
+		raw := make([]surface.Source, len(sourcePaths))
+		for i, sp := range sourcePaths {
+			raw[i] = surface.Source{Path: sp}
+		}
+		sources := surface.AttentionWeights(raw, nowUnix, lastTouch, cur, p)
+
+		// (c) Per-source association inputs. Embeddings decoded once.
+		vecs := map[string][]float32{}
+		if all, err := ix.AllEmbeddings(); err == nil {
+			for pth, blob := range all {
+				if vc, e := embed.Decode(blob); e == nil {
+					vecs[pth] = vc
+				}
+			}
+		}
+		linkSets := map[string]map[string]bool{}
+		coCounts := map[string]map[string]int{}
+		for _, src := range sources {
+			ls := map[string]bool{}
+			if b, e := ix.BacklinksTo(src.Path); e == nil {
+				for _, x := range b {
+					ls[x] = true
+				}
+			}
+			if f, e := ix.LinksFrom(src.Path); e == nil {
+				for _, x := range f {
+					ls[x] = true
+				}
+			}
+			linkSets[src.Path] = ls
+			cc, _ := ix.CoAccessCount(src.Path, p.SessionGap)
+			coCounts[src.Path] = cc
+		}
+
+		// (d) Access history for base-level, in one scan.
+		hist, _ := ix.AllAccessHistory()
+
+		// (e) Build candidates with per-source edges. Skip the self-source edge
+		// (a note that is also a session source has cosine 1.0 to itself and
+		// would fabricate a semantic boost). Path-sort for deterministic noise.
 		cands := make([]surface.Candidate, 0, len(notes))
 		for _, n := range notes {
+			edges := map[string]surface.EdgeSet{}
+			for _, src := range sources {
+				if src.Path == n.Path {
+					continue
+				}
+				sim := 0.0
+				if sv, cv := vecs[src.Path], vecs[n.Path]; sv != nil && cv != nil {
+					sim = float64(embed.CosineSimilarity(sv, cv))
+				}
+				edges[src.Path] = surface.EdgeSet{
+					Backlink:      linkSets[src.Path][n.Path],
+					Similarity:    sim,
+					CoAccessCount: coCounts[src.Path][n.Path],
+				}
+			}
 			cands = append(cands, surface.Candidate{
-				Path:        n.Path,
-				Title:       n.Name,
-				ModTime:     n.ModTime,
-				HasBacklink: linked[n.Path],
-				CoAccessed:  coAcc[n.Path],
-				Similarity:  float64(sims[n.Path]),
+				Path:     n.Path,
+				Title:    n.Name,
+				ModTime:  n.ModTime,
+				Accesses: hist[n.Path],
+				Edges:    edges,
 			})
 		}
+		sort.Slice(cands, func(i, j int) bool { return cands[i].Path < cands[j].Path })
 
-		now := time.Now()
-		scored := surface.Rank(surface.Candidate{Path: cur}, cands, now)
-		const surfaceLimit = 12
-		if len(scored) > surfaceLimit {
-			scored = scored[:surfaceLimit]
+		// (f) Rank by activation.
+		noiser := surface.NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian)
+		scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser)
+		if len(scored) > p.TopN {
+			scored = scored[:p.TopN]
 		}
 
-		// OnThisDay is independent of Rank — separate panel section.
-		// Exclude the current note from the prior-year matches.
+		// (g) Explicit backlinks list + on_this_day, both unchanged in shape.
+		back, _ := ix.BacklinksTo(cur)
 		otd := surface.OnThisDay(cands, now)
 		filtered := otd[:0]
 		for _, c := range otd {
@@ -714,38 +780,9 @@ func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 			"backlinks":   back,
 			"scored":      scored,
 			"on_this_day": filtered,
+			"trail":       sourcePaths, // focus first, then earlier-session sources
 		})
 	}
-}
-
-// candidateSimilarities returns a map[path]cosine vs the current note's
-// embedding. Returns empty map (not nil) if any precondition fails — callers
-// just read sims[path] and get 0.
-func candidateSimilarities(ix *index.Index, curPath string) map[string]float32 {
-	curBlob, err := ix.GetEmbedding(curPath)
-	if err != nil || curBlob == nil {
-		return map[string]float32{}
-	}
-	curVec, err := embed.Decode(curBlob)
-	if err != nil {
-		return map[string]float32{}
-	}
-	all, err := ix.AllEmbeddings()
-	if err != nil {
-		return map[string]float32{}
-	}
-	out := make(map[string]float32, len(all))
-	for p, blob := range all {
-		if p == curPath {
-			continue
-		}
-		v, err := embed.Decode(blob)
-		if err != nil {
-			continue
-		}
-		out[p] = embed.CosineSimilarity(curVec, v)
-	}
-	return out
 }
 
 func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {

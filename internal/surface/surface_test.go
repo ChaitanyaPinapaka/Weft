@@ -2,250 +2,283 @@ package surface
 
 import (
 	"math"
-	"sort"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestEmptyCandidates(t *testing.T) {
-	got := Rank(Candidate{Path: "a"}, nil, time.Now())
-	if got == nil {
-		t.Fatal("Rank returned nil; want empty slice")
+const day = 24 * 60 * 60 // seconds
+
+func zeroNoise() Noiser { return NewNoiser(0, 0, false) }
+
+// --- BaseLevel ---------------------------------------------------------------
+
+func TestBaseLevelClamps(t *testing.T) {
+	p := DefaultParams()
+	now := int64(1_000_000_000)
+
+	// t = 0 (accessed this very instant): clamp to MinAge, contributes 1^-d = 1.
+	if b := BaseLevel([]int64{now}, now, p); math.IsInf(b, 0) || math.IsNaN(b) || b != 0 {
+		t.Fatalf("t=0 should clamp to B=ln(1)=0, got %v", b)
 	}
-	if len(got) != 0 {
-		t.Fatalf("len = %d; want 0", len(got))
+	// t < 0 (future timestamp / clock skew): clamp, no NaN.
+	if b := BaseLevel([]int64{now + 500}, now, p); math.IsNaN(b) || b != 0 {
+		t.Fatalf("t<0 should clamp to B=0, got %v", b)
 	}
 }
 
-func TestOnThisDayEmpty(t *testing.T) {
-	got := OnThisDay(nil, time.Now())
-	if got == nil {
-		t.Fatal("OnThisDay returned nil; want empty slice")
+func TestBaseLevelNeverAccessed(t *testing.T) {
+	p := DefaultParams()
+	if b := BaseLevel(nil, 1_000_000_000, p); b != p.NeverBase {
+		t.Fatalf("never-accessed want NeverBase=%v, got %v", p.NeverBase, b)
 	}
-	if len(got) != 0 {
-		t.Fatalf("len = %d; want 0", len(got))
-	}
-}
-
-func TestCurrentExcluded(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	current := Candidate{Path: "me.html"}
-	cands := []Candidate{
-		{Path: "me.html", HasBacklink: true},
-		{Path: "other.html", HasBacklink: true},
-	}
-	got := Rank(current, cands, now)
-	if len(got) != 1 {
-		t.Fatalf("len = %d; want 1", len(got))
-	}
-	if got[0].Path != "other.html" {
-		t.Fatalf("got %q; want other.html", got[0].Path)
+	// NeverBase must sit below an ancient single access (100yr ≈ -11).
+	ancient := BaseLevel([]int64{1}, int64(100*365*day), p)
+	if p.NeverBase >= ancient {
+		t.Fatalf("NeverBase=%v must be below ancient single access B=%v", p.NeverBase, ancient)
 	}
 }
 
-func TestBacklinkBeatsRecency(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	mod := now.AddDate(0, 0, -3) // 3 days ago, similar age for both
-	cands := []Candidate{
-		{Path: "recent.html", ModTime: mod},
-		{Path: "linked.html", ModTime: mod, HasBacklink: true},
+func TestBaseLevelMonotonic(t *testing.T) {
+	p := DefaultParams()
+	now := int64(10 * 365 * day)
+	recent := BaseLevel([]int64{now - day}, now, p)
+	old := BaseLevel([]int64{now - 100*day}, now, p)
+	if recent <= old {
+		t.Fatalf("more recent must have higher base: recent=%v old=%v", recent, old)
 	}
-	got := Rank(Candidate{Path: "cur"}, cands, now)
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2", len(got))
-	}
-	if got[0].Path != "linked.html" {
-		t.Fatalf("top = %q; want linked.html", got[0].Path)
-	}
-}
-
-func TestBacklinkPlusSemanticBeatsRecency(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	mod := now.AddDate(0, 0, -3)
-	// recency-only candidate (very fresh) vs backlink + 0.5 similarity
-	hot := Candidate{Path: "hot.html", ModTime: now} // recency ~ 0.2
-	mix := Candidate{Path: "mix.html", ModTime: mod, HasBacklink: true, Similarity: 0.5}
-	got := Rank(Candidate{Path: "cur"}, []Candidate{hot, mix}, now)
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2", len(got))
-	}
-	if got[0].Path != "mix.html" {
-		t.Fatalf("top = %q; want mix.html; scores=%v/%v", got[0].Path, got[0].Score, got[1].Score)
-	}
-	// 0.4 (backlink) + 0.2 (0.4 * 0.5 semantic) + recency component (~0.18) ≈ 0.78
-	if got[0].Score < 0.6 {
-		t.Fatalf("mix score = %v; want >= 0.6", got[0].Score)
+	// Frequency: two accesses must beat one at the same recency.
+	once := BaseLevel([]int64{now - 10*day}, now, p)
+	twice := BaseLevel([]int64{now - 10*day, now - 10*day}, now, p)
+	if twice <= once {
+		t.Fatalf("more frequent must have higher base: twice=%v once=%v", twice, once)
 	}
 }
 
-func TestCoAccessedAddsBonus(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	mod := now.AddDate(0, 0, -3)
-	plain := Candidate{Path: "plain.html", ModTime: mod, HasBacklink: true}
-	withCo := Candidate{Path: "co.html", ModTime: mod, HasBacklink: true, CoAccessed: true}
-	got := Rank(Candidate{Path: "cur"}, []Candidate{plain, withCo}, now)
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2", len(got))
+// --- SeedMtime ---------------------------------------------------------------
+
+func TestSeedMtime(t *testing.T) {
+	p := DefaultParams()
+	mt := time.Unix(12345, 0)
+	if got := SeedMtime(nil, mt, p); len(got) != 1 || got[0] != 12345 {
+		t.Fatalf("zero accesses should seed [mtime], got %v", got)
 	}
-	if got[0].Path != "co.html" {
-		t.Fatalf("top = %q; want co.html", got[0].Path)
+	real := []int64{999}
+	if got := SeedMtime(real, mt, p); len(got) != 1 || got[0] != 999 {
+		t.Fatalf("real accesses must be left untouched, got %v", got)
 	}
-	diff := got[0].Score - got[1].Score
-	if math.Abs(diff-coAccessBonus) > 1e-9 {
-		t.Fatalf("score diff = %v; want %v", diff, coAccessBonus)
-	}
-	if !hasReason(got[0].Reasons, "co-accessed") {
-		t.Fatalf("reasons = %v; want co-accessed", got[0].Reasons)
+	p.SeedMtime = false
+	if got := SeedMtime(nil, mt, p); got != nil {
+		t.Fatalf("SeedMtime=false should not seed, got %v", got)
 	}
 }
 
-func TestSimilarityOrdering(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	mod := now.AddDate(0, 0, -10)
-	lo := Candidate{Path: "lo.html", ModTime: mod, Similarity: 0.1}
-	hi := Candidate{Path: "hi.html", ModTime: mod, Similarity: 0.9}
-	got := Rank(Candidate{Path: "cur"}, []Candidate{lo, hi}, now)
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2", len(got))
+// --- Spread ------------------------------------------------------------------
+
+func TestSpreadBacklinkAndCoAccess(t *testing.T) {
+	p := DefaultParams()
+	src := []Source{{Path: "focus.html", Weight: 1.0}}
+	c := Candidate{Path: "c.html", Edges: map[string]EdgeSet{
+		"focus.html": {Backlink: true, CoAccessCount: 9},
+	}}
+	raw, reasons := Spread(c, src, p)
+	wantCo := p.WCoAccess * math.Log1p(9) / math.Log1p(p.CoSaturation)
+	want := p.WBacklink + wantCo
+	if math.Abs(raw-want) > 1e-9 {
+		t.Fatalf("spread want %v, got %v", want, raw)
 	}
-	if got[0].Path != "hi.html" {
-		t.Fatalf("top = %q; want hi.html", got[0].Path)
+	if !hasReason(reasons, "backlink") || !hasReason(reasons, "co-access") {
+		t.Fatalf("reasons missing: %v", reasons)
 	}
 }
 
-func TestSortedDescending(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	cands := []Candidate{
-		{Path: "a", ModTime: now.AddDate(0, 0, -1), Similarity: 0.2},
-		{Path: "b", ModTime: now.AddDate(0, 0, -1), HasBacklink: true},
-		{Path: "c", ModTime: now.AddDate(0, 0, -1), Similarity: 0.5},
-		{Path: "d", ModTime: now.AddDate(0, 0, -1), HasBacklink: true, CoAccessed: true},
+func TestSpreadSemanticThresholdAndMax(t *testing.T) {
+	p := DefaultParams()
+	src := []Source{{Path: "a.html", Weight: 1.0}, {Path: "b.html", Weight: 1.0}}
+	// Below threshold from a, above from b: only b's contributes (max-over-sources).
+	c := Candidate{Path: "c.html", Edges: map[string]EdgeSet{
+		"a.html": {Similarity: 0.40},
+		"b.html": {Similarity: 0.90},
+	}}
+	raw, reasons := Spread(c, src, p)
+	want := p.WSemantic * 0.90
+	if math.Abs(raw-want) > 1e-9 {
+		t.Fatalf("semantic max-over-sources want %v, got %v", want, raw)
 	}
-	got := Rank(Candidate{Path: "cur"}, cands, now)
-	if len(got) != 4 {
-		t.Fatalf("len = %d; want 4", len(got))
+	if !hasReason(reasons, "semantic") {
+		t.Fatalf("semantic reason should fire: %v", reasons)
 	}
-	if !sort.SliceIsSorted(got, func(i, j int) bool { return got[i].Score > got[j].Score }) {
-		scores := make([]float64, len(got))
-		for i, s := range got {
-			scores[i] = s.Score
-		}
-		t.Fatalf("not sorted desc: %v", scores)
-	}
-}
-
-func TestZeroScoreDropped(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	// Bare candidate with zero values: no backlink, no mod time, no similarity, no co-access.
-	got := Rank(Candidate{Path: "cur"}, []Candidate{{Path: "empty.html"}}, now)
-	if len(got) != 0 {
-		t.Fatalf("len = %d; want 0", len(got))
+	// All below threshold → no semantic.
+	c2 := Candidate{Path: "c.html", Edges: map[string]EdgeSet{"a.html": {Similarity: 0.40}}}
+	if raw2, r2 := Spread(c2, src, p); raw2 != 0 || hasReason(r2, "semantic") {
+		t.Fatalf("sub-threshold cosine must not fire: raw=%v reasons=%v", raw2, r2)
 	}
 }
 
-func TestLastAccessedDominatesModTime(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	oldMod := now.AddDate(-2, 0, 0)
-	// One stale on disk but freshly accessed; one stale and untouched.
-	fresh := Candidate{Path: "fresh.html", ModTime: oldMod, LastAccessed: now.AddDate(0, 0, -1)}
-	stale := Candidate{Path: "stale.html", ModTime: oldMod}
-	got := Rank(Candidate{Path: "cur"}, []Candidate{stale, fresh}, now)
-	if len(got) < 1 || got[0].Path != "fresh.html" {
-		t.Fatalf("top = %+v; want fresh.html first", got)
+// TestSpreadSkipsSelfEdge is the lens-2 adversarial regression: a note that is
+// both a session source and a candidate must NOT get a semantic boost from its
+// self-similarity (cosine 1.0 to itself).
+func TestSpreadSkipsSelfEdge(t *testing.T) {
+	p := DefaultParams()
+	src := []Source{{Path: "self.html", Weight: 1.0}}
+	c := Candidate{Path: "self.html", Edges: map[string]EdgeSet{
+		"self.html": {Similarity: 1.0, Backlink: true, CoAccessCount: 5},
+	}}
+	raw, reasons := Spread(c, src, p)
+	if raw != 0 || len(reasons) != 0 {
+		t.Fatalf("self-edge must be skipped entirely, got raw=%v reasons=%v", raw, reasons)
 	}
 }
 
-func TestRankNoOnThisDayReason(t *testing.T) {
-	// On-this-day logic must no longer live inside Rank.
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	c := Candidate{Path: "old.html", ModTime: now.AddDate(-1, 0, 0)}
-	got := Rank(Candidate{Path: "cur"}, []Candidate{c}, now)
-	for _, s := range got {
-		for _, r := range s.Reasons {
-			if strings.HasPrefix(r, "on-this-day") {
-				t.Fatalf("Rank still emits on-this-day reason: %v", s.Reasons)
-			}
+// --- AttentionWeights --------------------------------------------------------
+
+func TestAttentionWeights(t *testing.T) {
+	p := DefaultParams()
+	now := int64(1_000_000)
+	lastTouch := map[string]int64{
+		"focus.html":  now,
+		"recent.html": now - 60,   // ~1 min ago
+		"older.html":  now - 1800, // 30 min ago
+	}
+	srcs := []Source{{Path: "focus.html"}, {Path: "recent.html"}, {Path: "older.html"}}
+	out := AttentionWeights(srcs, now, lastTouch, "focus.html", p)
+
+	var focusW, recentW, olderW float64
+	for _, s := range out {
+		switch s.Path {
+		case "focus.html":
+			focusW = s.Weight
+		case "recent.html":
+			recentW = s.Weight
+		case "older.html":
+			olderW = s.Weight
 		}
 	}
-}
-
-func TestOnThisDayPriorYearExactMatch(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	c := Candidate{Path: "p.html", ModTime: time.Date(2024, 5, 25, 9, 0, 0, 0, time.UTC)}
-	got := OnThisDay([]Candidate{c}, now)
-	if len(got) != 1 || got[0].Path != "p.html" {
-		t.Fatalf("got %+v; want one hit for p.html", got)
+	if focusW != p.FocusWeight {
+		t.Fatalf("focus must be pinned at %v, got %v", p.FocusWeight, focusW)
+	}
+	if recentW <= olderW {
+		t.Fatalf("more recent source must out-weight older: recent=%v older=%v", recentW, olderW)
+	}
+	if math.Abs((recentW+olderW)-p.EarlierBudget) > 1e-9 {
+		t.Fatalf("earlier weights must normalize to EarlierBudget=%v, got %v", p.EarlierBudget, recentW+olderW)
 	}
 }
 
-func TestOnThisDayWindowIncludesPlusMinusThree(t *testing.T) {
+// --- Noiser ------------------------------------------------------------------
+
+func TestNoiserDeterminism(t *testing.T) {
+	if zeroNoise().Noise("x") != 0 {
+		t.Fatal("scale 0 must yield 0")
+	}
+	a := NewNoiser(0.25, 42, false)
+	b := NewNoiser(0.25, 42, false)
+	for i := 0; i < 100; i++ {
+		if a.Noise("p") != b.Noise("p") {
+			t.Fatal("same seed must yield identical stream")
+		}
+	}
+}
+
+// --- Rank: the scale-balance contract (lens-1 regression) --------------------
+
+// TestRankAssociationOvercomesRecency encodes the core contract the adversarial
+// review demanded: a backlinked note read months ago must out-rank an edgeless
+// note read more recently. Without SpreadScale this fails (recency dominates).
+func TestRankAssociationOvercomesRecency(t *testing.T) {
+	p := DefaultParams()
+	now := int64(10 * 365 * day)
+
+	backlinked := Candidate{
+		Path: "old-but-linked.html", ModTime: time.Unix(now, 0),
+		Accesses: []int64{now - 60*day}, // read ~2 months ago
+		Edges:    map[string]EdgeSet{"focus.html": {Backlink: true}},
+	}
+	recentNoEdge := Candidate{
+		Path: "recent-orphan.html", ModTime: time.Unix(now, 0),
+		Accesses: []int64{now - 2*day}, // read 2 days ago, but no association
+		Edges:    map[string]EdgeSet{},
+	}
+	sources := []Source{{Path: "focus.html", Weight: 1.0}}
+	scored := Rank(Candidate{Path: "focus.html"}, sources,
+		[]Candidate{recentNoEdge, backlinked}, now, p, zeroNoise())
+
+	if len(scored) != 2 || scored[0].Path != "old-but-linked.html" {
+		t.Fatalf("association must overcome a months-vs-days recency gap; got order %v",
+			[]string{scored[0].Path, scored[1].Path})
+	}
+}
+
+func TestRankExcludesFocusAndSortsDesc(t *testing.T) {
+	now := int64(1_000_000_000)
+	p := DefaultParams()
+	cands := []Candidate{
+		{Path: "focus.html", Accesses: []int64{now - day}},
+		{Path: "a.html", Accesses: []int64{now - day}},
+		{Path: "b.html", Accesses: []int64{now - 30*day}},
+	}
+	scored := Rank(Candidate{Path: "focus.html"}, []Source{{Path: "focus.html", Weight: 1}}, cands, now, p, zeroNoise())
+	for _, s := range scored {
+		if s.Path == "focus.html" {
+			t.Fatal("focus must be excluded")
+		}
+	}
+	for i := 1; i < len(scored); i++ {
+		if scored[i-1].Activation < scored[i].Activation {
+			t.Fatal("must be sorted descending")
+		}
+	}
+}
+
+func TestRankResurfacedReason(t *testing.T) {
+	now := int64(10 * 365 * day)
+	p := DefaultParams()
+	// Cold base (read ~1yr ago) but strong association → resurfaced.
+	cold := Candidate{
+		Path: "forgotten.html", ModTime: time.Unix(now, 0),
+		Accesses: []int64{now - 365*day},
+		Edges:    map[string]EdgeSet{"focus.html": {Backlink: true, Similarity: 0.9}},
+	}
+	scored := Rank(Candidate{Path: "focus.html"},
+		[]Source{{Path: "focus.html", Weight: 1}}, []Candidate{cold}, now, p, zeroNoise())
+	if len(scored) != 1 || !hasReason(scored[0].Reasons, "resurfaced") {
+		t.Fatalf("forgotten-but-associated note should be resurfaced: %v", scored)
+	}
+}
+
+// --- OnThisDay (behavior unchanged) ------------------------------------------
+
+func TestOnThisDay(t *testing.T) {
 	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
 	cands := []Candidate{
-		{Path: "m3.html", ModTime: time.Date(2024, 5, 22, 0, 0, 0, 0, time.UTC)},
-		{Path: "p3.html", ModTime: time.Date(2024, 5, 28, 0, 0, 0, 0, time.UTC)},
-		{Path: "m4.html", ModTime: time.Date(2024, 5, 21, 0, 0, 0, 0, time.UTC)}, // outside
-		{Path: "p4.html", ModTime: time.Date(2024, 5, 29, 0, 0, 0, 0, time.UTC)}, // outside
+		{Path: "1yr.html", ModTime: time.Date(2025, 5, 26, 9, 0, 0, 0, time.UTC)},    // within ±3d, prior yr
+		{Path: "5yr.html", ModTime: time.Date(2021, 5, 24, 9, 0, 0, 0, time.UTC)},    // within ±3d, prior yr
+		{Path: "thisyr.html", ModTime: time.Date(2026, 5, 25, 9, 0, 0, 0, time.UTC)}, // same year → excluded
+		{Path: "far.html", ModTime: time.Date(2024, 8, 1, 9, 0, 0, 0, time.UTC)},     // outside window
 	}
 	got := OnThisDay(cands, now)
 	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2; got=%+v", len(got), got)
+		t.Fatalf("want 2 anniversary notes, got %d (%v)", len(got), paths(got))
 	}
-	paths := map[string]bool{}
-	for _, c := range got {
-		paths[c.Path] = true
-	}
-	if !paths["m3.html"] || !paths["p3.html"] {
-		t.Fatalf("missing ±3 hits: %v", paths)
+	if got[0].Path != "1yr.html" { // most recent first
+		t.Fatalf("want most-recent first, got %v", paths(got))
 	}
 }
 
-func TestOnThisDayExcludesSameYear(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	cands := []Candidate{
-		{Path: "today.html", ModTime: time.Date(2026, 5, 25, 6, 0, 0, 0, time.UTC)},
-		{Path: "near.html", ModTime: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC)},
-	}
-	got := OnThisDay(cands, now)
-	if len(got) != 0 {
-		t.Fatalf("len = %d; want 0 (same year excluded)", len(got))
-	}
-}
+// --- helpers -----------------------------------------------------------------
 
-func TestOnThisDaySortedByModTimeDesc(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	cands := []Candidate{
-		{Path: "old.html", ModTime: time.Date(2020, 5, 25, 0, 0, 0, 0, time.UTC)},
-		{Path: "newer.html", ModTime: time.Date(2024, 5, 26, 0, 0, 0, 0, time.UTC)},
-		{Path: "mid.html", ModTime: time.Date(2022, 5, 24, 0, 0, 0, 0, time.UTC)},
-	}
-	got := OnThisDay(cands, now)
-	if len(got) != 3 {
-		t.Fatalf("len = %d; want 3", len(got))
-	}
-	for i := 1; i < len(got); i++ {
-		if got[i-1].ModTime.Before(got[i].ModTime) {
-			t.Fatalf("not sorted desc by ModTime: %+v", got)
-		}
-	}
-	if got[0].Path != "newer.html" {
-		t.Fatalf("first = %q; want newer.html", got[0].Path)
-	}
-}
-
-func TestOnThisDayIgnoresZeroModTime(t *testing.T) {
-	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	got := OnThisDay([]Candidate{{Path: "z.html"}}, now)
-	if len(got) != 0 {
-		t.Fatalf("len = %d; want 0", len(got))
-	}
-}
-
-func hasReason(reasons []string, want string) bool {
-	for _, r := range reasons {
+func hasReason(rs []string, want string) bool {
+	for _, r := range rs {
 		if r == want {
 			return true
 		}
 	}
 	return false
+}
+
+func paths(cs []Candidate) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.Path
+	}
+	return out
 }

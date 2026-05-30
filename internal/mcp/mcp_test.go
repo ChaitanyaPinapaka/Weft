@@ -112,10 +112,10 @@ func resultErrorMessage(t *testing.T, res *mcplib.CallToolResult) string {
 	return tc.Text
 }
 
-// TestSurfaceCandidateBuilding verifies that backlinks (both incoming and
-// outgoing) flip HasBacklink, which in turn produces a non-zero score. This
-// is the slice of surface logic reimplemented in this package — worth a real
-// assertion.
+// TestSurfaceCandidateBuilding verifies that linked notes (incoming or
+// outgoing) surface with a "backlink" reason from the ACT-R spreading term.
+// This is the slice of surface logic reimplemented in this package — worth a
+// real assertion.
 func TestSurfaceCandidateBuilding(t *testing.T) {
 	v, ix := fixture(t)
 	res, err := buildSurface(v, ix, "alpha.html", time.Now())
@@ -123,15 +123,22 @@ func TestSurfaceCandidateBuilding(t *testing.T) {
 		t.Fatalf("buildSurface: %v", err)
 	}
 
-	// alpha links to beta; gamma links to alpha. Both should appear as
-	// backlink-bearing candidates (HasBacklink covers either direction).
+	// alpha links to beta; gamma links to alpha. Both should surface with a
+	// "backlink" reason (spreading counts either direction).
 	want := map[string]bool{"beta.html": false, "gamma.html": false}
 	for _, sc := range res.Scored {
 		if _, expected := want[sc.Path]; !expected {
 			continue
 		}
-		if !sc.HasBacklink {
-			t.Errorf("%s expected HasBacklink=true", sc.Path)
+		hasBacklink := false
+		for _, reason := range sc.Reasons {
+			if reason == "backlink" {
+				hasBacklink = true
+				break
+			}
+		}
+		if !hasBacklink {
+			t.Errorf("%s expected a backlink reason, got %v", sc.Path, sc.Reasons)
 		}
 		want[sc.Path] = true
 	}
