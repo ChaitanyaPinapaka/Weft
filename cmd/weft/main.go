@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,12 +38,20 @@ Usage:
                              flags: --force (overwrite existing notes)
                                     -v <vault>
   weft sync init             set up E2EE multi-device sync on your own cloud
-  weft sync join             enroll this device into an existing synced vault
+  weft sync join             enroll this device with the shared passphrase
+  weft sync pair             enroll this device from another one (no passphrase)
+  weft sync pair-approve <code>  approve a pairing request on an enrolled device
+  weft sync recovery         print this vault's 24-word recovery phrase
+  weft sync recover --phrase "..."   rebuild a vault from its recovery phrase
   weft sync check            verify bucket creds + connectivity (no data touched)
   weft sync                  run one convergence cycle (push + pull)
-                             flags: -v <vault> --passphrase <p>
+                             flags: -v <vault> --passphrase <p> --phrase "<24 words>"
                                     --provider {r2|aws|minio|b2|fs} --bucket --endpoint
                                     --region --access-key --secret --path-style --fs-path
+
+The vault key is cached in your OS keychain after init/join/pair, so the daemon
+and "weft sync" need no passphrase on that device (WEFT_SECRET_STORE=file forces
+the on-disk fallback for headless hosts).
 `
 
 func main() {
@@ -324,11 +335,16 @@ func runImport(args []string) error {
 // from --passphrase or the WEFT_PASSPHRASE env var.
 func runSync(args []string) error {
 	sub := ""
-	if len(args) > 0 && (args[0] == "init" || args[0] == "join" || args[0] == "check") {
+	subs := map[string]bool{
+		"init": true, "join": true, "check": true,
+		"recovery": true, "recover": true, "pair": true, "pair-approve": true,
+	}
+	if len(args) > 0 && subs[args[0]] {
 		sub, args = args[0], args[1:]
 	}
 
-	var vaultPath, passphrase string
+	var vaultPath, passphrase, phrase string
+	var positional []string
 	cfg := syncpkg.Config{Prefix: "weft/v1"}
 	for i := 0; i < len(args); i++ {
 		next := func() string {
@@ -361,8 +377,13 @@ func runSync(args []string) error {
 			cfg.FSPath = next()
 		case "--path-style":
 			cfg.PathStyle = true
+		case "--phrase":
+			phrase = next()
 		default:
-			return fmt.Errorf("unknown flag %q", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("unknown flag %q", args[i])
+			}
+			positional = append(positional, args[i]) // e.g. the pairing code
 		}
 	}
 	if passphrase == "" {
@@ -390,14 +411,122 @@ func runSync(args []string) error {
 		return nil
 	}
 
+	// recovery: show this vault's 24-word recovery phrase (needs an unlocked device).
+	if sub == "recovery" {
+		vk, err := syncpkg.LocalVaultKey(v, passphrase)
+		if err != nil {
+			return fmt.Errorf("unlock this device first (keychain or --passphrase): %w", err)
+		}
+		ph, err := syncpkg.VaultKeyMnemonic(vk)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Recovery phrase — write it down offline. Anyone with these words can read your vault.")
+		fmt.Println("\n  " + ph + "\n")
+		return nil
+	}
+
+	// recover: rebuild a vault on a fresh device from the recovery phrase + cloud flags.
+	if sub == "recover" {
+		if phrase == "" {
+			return errors.New("--phrase is required (your 24-word recovery phrase, quoted)")
+		}
+		vk, err := syncpkg.VaultKeyFromMnemonic(phrase)
+		if err != nil {
+			return err
+		}
+		eng, err := syncpkg.JoinWithKey(v, cfg, vk)
+		if err != nil {
+			return err
+		}
+		res, err := eng.Sync()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("recovered — synced: applied %d, conflicts %d\n", res.Applied, len(res.ConflictCopies))
+		return nil
+	}
+
+	// pair: enroll THIS new device by getting the key from an existing one (no passphrase).
+	if sub == "pair" {
+		p, err := syncpkg.StartPairing(v, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("On a device that's already synced, run:\n\n  weft sync pair-approve %s\n\nWaiting for approval…\n", p.ReqID())
+		for {
+			ok, err := p.FetchResponderKey()
+			if err != nil {
+				return err
+			}
+			if ok {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		fmt.Printf("\nCheck this code matches the OTHER device's screen:  %s\n", p.SAS())
+		if !confirm("Do the two codes match?") {
+			return errors.New("aborted — codes did not match (someone may be intercepting)")
+		}
+		fmt.Println("Finishing…")
+		var eng *syncpkg.Engine
+		for {
+			eng, err = p.Finish()
+			if err != nil {
+				return err
+			}
+			if eng != nil {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		res, err := eng.Sync()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("paired — synced: applied %d\n", res.Applied)
+		return nil
+	}
+
+	// pair-approve: on an enrolled device, hand the key to a new device by its code.
+	if sub == "pair-approve" {
+		if len(positional) == 0 {
+			return errors.New("usage: weft sync pair-approve <code>  (the code shown on the new device)")
+		}
+		vk, err := syncpkg.LocalVaultKey(v, passphrase)
+		if err != nil {
+			return fmt.Errorf("unlock this device first (keychain or --passphrase): %w", err)
+		}
+		be, err := syncpkg.OpenBackend(v)
+		if err != nil {
+			return err
+		}
+		sas, finalize, err := syncpkg.ApprovePairing(be, positional[0], vk)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Check this code matches the NEW device's screen:  %s\n", sas)
+		if !confirm("Do the two codes match?") {
+			return errors.New("aborted — codes did not match")
+		}
+		if err := finalize(); err != nil {
+			return err
+		}
+		fmt.Println("Approved — the new device will finish automatically.")
+		return nil
+	}
+
 	var eng *syncpkg.Engine
 	switch sub {
 	case "init":
 		eng, err = syncpkg.Init(v, cfg, passphrase)
 	case "join":
 		eng, err = syncpkg.Join(v, cfg, passphrase)
-	default:
-		eng, err = syncpkg.Open(v, passphrase)
+	default: // bare `weft sync` — converge once, preferring the cached key
+		eng, err = syncpkg.OpenLocal(v)
+		if errors.Is(err, syncpkg.ErrNeedPassphrase) {
+			eng, err = syncpkg.Open(v, passphrase)
+		}
 	}
 	if err != nil {
 		return err
@@ -412,9 +541,18 @@ func runSync(args []string) error {
 		fmt.Println("  conflict copy:", c)
 	}
 	if sub == "init" {
-		fmt.Println("initialized — other devices: `weft sync join` with the same provider flags + passphrase")
+		fmt.Println("initialized — enroll another device with `weft sync pair` (no passphrase) or `weft sync join`")
+		fmt.Println("save your recovery phrase now: `weft sync recovery`")
 	}
 	return nil
+}
+
+// confirm reads a y/N answer from stdin for an interactive pairing step.
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N] ", prompt)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
 }
 
 // uniqueClipPath returns the first clips/YYYY-MM-DD-{slug}.html path that

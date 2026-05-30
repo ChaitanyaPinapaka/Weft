@@ -8,7 +8,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.102.2
 	github.com/aws/smithy-go v1.26.0
 	github.com/knights-analytics/hugot v0.7.4
+	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/yuin/goldmark v1.7.13
+	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/net v0.55.0
 	modernc.org/sqlite v1.50.1
 )
@@ -24,6 +26,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.25 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/spf13/cast v1.7.1 // indirect

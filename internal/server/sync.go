@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -25,12 +26,18 @@ func startAutoSync(v *vault.Vault, ix *index.Index, emb embed.Embedder) {
 	if !syncpkg.Configured(v) {
 		return
 	}
-	pass := os.Getenv("WEFT_PASSPHRASE")
-	if pass == "" {
-		fmt.Println("Sync  configured — set WEFT_PASSPHRASE to enable auto-sync")
-		return
+	// Prefer the vault key cached in the OS keychain (init/join/pair stored it), so
+	// the daemon needs no passphrase on a desktop. Fall back to WEFT_PASSPHRASE for
+	// headless hosts using the on-disk keyfile.
+	eng, err := syncpkg.OpenLocal(v)
+	if errors.Is(err, syncpkg.ErrNeedPassphrase) {
+		pass := os.Getenv("WEFT_PASSPHRASE")
+		if pass == "" {
+			fmt.Println("Sync  configured — unlock the keychain or set WEFT_PASSPHRASE to enable auto-sync")
+			return
+		}
+		eng, err = syncpkg.Open(v, pass)
 	}
-	eng, err := syncpkg.Open(v, pass)
 	if err != nil {
 		fmt.Printf("Sync  disabled: %v\n", err)
 		return

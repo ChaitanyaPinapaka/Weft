@@ -95,6 +95,9 @@ func Init(v *vault.Vault, cfg Config, passphrase string) (*Engine, error) {
 	if err := writeConfig(dir, cfg, kfBytes); err != nil {
 		return nil, err
 	}
+	if err := persistSecrets(v, cfg, vk); err != nil {
+		return nil, err
+	}
 	return NewEncrypted(v, be, vk)
 }
 
@@ -129,19 +132,81 @@ func Join(v *vault.Vault, cfg Config, passphrase string) (*Engine, error) {
 	if err := writeConfig(dir, cfg, kfBytes); err != nil {
 		return nil, err
 	}
+	if err := persistSecrets(v, cfg, vk); err != nil {
+		return nil, err
+	}
 	return NewEncrypted(v, be, vk)
+}
+
+// JoinWithKey enrolls this device using a vault key obtained out-of-band — a
+// recovery phrase or device pairing — with NO passphrase typed here. It writes
+// the config, caches the key + cloud secret, and returns a ready engine.
+func JoinWithKey(v *vault.Vault, cfg Config, vk VaultKey) (*Engine, error) {
+	dir := syncDir(v)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	be, err := cfg.backend()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeConfig(dir, cfg, nil); err != nil {
+		return nil, err
+	}
+	if err := persistSecrets(v, cfg, vk); err != nil {
+		return nil, err
+	}
+	return NewEncrypted(v, be, vk)
+}
+
+// OpenLocal opens the engine from the vault key cached in the OS keychain — so a
+// desktop with an unlocked keychain unlocks the vault with no passphrase prompt.
+// Returns ErrNeedPassphrase when no key is cached (headless / file-fallback host).
+func OpenLocal(v *vault.Vault) (*Engine, error) {
+	store, _ := newSecretStore(v)
+	vk, err := loadVaultKey(store)
+	if err != nil {
+		return nil, ErrNeedPassphrase
+	}
+	cfg, err := LoadConfig(v)
+	if err != nil {
+		return nil, err
+	}
+	be, err := cfg.backend()
+	if err != nil {
+		return nil, err
+	}
+	return NewEncrypted(v, be, vk)
+}
+
+// ErrNeedPassphrase signals that no cached vault key is available and the caller
+// must fall back to passphrase-based Open.
+var ErrNeedPassphrase = errors.New("sync: no cached vault key — passphrase required")
+
+// persistSecrets moves the secrets out of the plaintext config: the cloud secret
+// access key always, and the raw vault key only into a real OS keychain (the file
+// fallback keeps the passphrase-wrapped keyfile instead).
+func persistSecrets(v *vault.Vault, cfg Config, vk VaultKey) error {
+	store, durable := newSecretStore(v)
+	if cfg.SecretAccessKey != "" {
+		if err := store.Set(secretCloud, cfg.SecretAccessKey); err != nil {
+			return err
+		}
+	}
+	if durable {
+		if err := storeVaultKey(store, vk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Open loads an already-configured vault's engine, unwrapping the vault key
 // from the local keyfile with the passphrase.
 func Open(v *vault.Vault, passphrase string) (*Engine, error) {
 	dir := syncDir(v)
-	cb, err := os.ReadFile(filepath.Join(dir, configName))
+	cfg, err := LoadConfig(v)
 	if err != nil {
-		return nil, errors.New("sync is not configured — run `weft sync init`")
-	}
-	var cfg Config
-	if err := json.Unmarshal(cb, &cfg); err != nil {
 		return nil, err
 	}
 	kfb, err := os.ReadFile(filepath.Join(dir, keyfileName))
@@ -163,20 +228,42 @@ func Open(v *vault.Vault, passphrase string) (*Engine, error) {
 	return NewEncrypted(v, be, vk)
 }
 
+// OpenBackend builds the backend from a vault's saved sync config (credentials
+// rehydrated from the secret store). Used by flows that talk to the bucket
+// without a full engine — e.g. approving a device pairing.
+func OpenBackend(v *vault.Vault) (Backend, error) {
+	cfg, err := LoadConfig(v)
+	if err != nil {
+		return nil, err
+	}
+	return cfg.backend()
+}
+
 // Configured reports whether the vault has sync set up.
 func Configured(v *vault.Vault) bool {
 	_, err := os.Stat(filepath.Join(syncDir(v), configName))
 	return err == nil
 }
 
-// LoadConfig reads a vault's saved sync config.
+// LoadConfig reads a vault's saved sync config, rehydrating the cloud secret
+// access key from the secret store (it's never written to the plaintext config).
 func LoadConfig(v *vault.Vault) (Config, error) {
 	var cfg Config
 	cb, err := os.ReadFile(filepath.Join(syncDir(v), configName))
 	if err != nil {
 		return cfg, errors.New("sync is not configured")
 	}
-	return cfg, json.Unmarshal(cb, &cfg)
+	if err := json.Unmarshal(cb, &cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.SecretAccessKey == "" {
+		if store, _ := newSecretStore(v); store != nil {
+			if s, err := store.Get(secretCloud); err == nil {
+				cfg.SecretAccessKey = s
+			}
+		}
+	}
+	return cfg, nil
 }
 
 // CheckConfig verifies the backend end-to-end with a probe object
@@ -229,12 +316,16 @@ func CheckConfig(cfg Config) error {
 }
 
 func writeConfig(dir string, cfg Config, keyfile []byte) error {
+	cfg.SecretAccessKey = "" // the secret lives in the SecretStore, never plaintext config
 	cb, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, configName), cb, 0o600); err != nil {
 		return err
+	}
+	if keyfile == nil {
+		return nil // pairing/recovery: no passphrase keyfile, the key is cached instead
 	}
 	return os.WriteFile(filepath.Join(dir, keyfileName), keyfile, 0o600)
 }
