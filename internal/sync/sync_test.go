@@ -161,13 +161,12 @@ func TestConcurrentEditYieldsOneConflictCopy(t *testing.T) {
 	if len(rb.ConflictCopies) != 1 {
 		t.Fatalf("want exactly one conflict copy, got %d (%v)", len(rb.ConflictCopies), rb.ConflictCopies)
 	}
-	// B's own edit is kept untouched at the original path (never silently lost).
-	if !strings.Contains(read(t, vb, "n.html"), "B-edit") {
-		t.Fatalf("B's local edit was overwritten: %q", read(t, vb, "n.html"))
-	}
-	// A's edit is preserved as the conflict copy.
-	if !strings.Contains(read(t, vb, rb.ConflictCopies[0]), "A-edit") {
-		t.Fatalf("conflict copy missing A's edit: %q", read(t, vb, rb.ConflictCopies[0]))
+	// Both edits are preserved across the main note + the conflict copy (which
+	// of the two wins the canonical path is deterministic but arbitrary — what
+	// matters is that neither is lost).
+	bothB := read(t, vb, "n.html") + read(t, vb, rb.ConflictCopies[0])
+	if !strings.Contains(bothB, "A-edit") || !strings.Contains(bothB, "B-edit") {
+		t.Fatalf("an edit was lost on B: %q", bothB)
 	}
 
 	// Drive to convergence: B re-syncs to publish the resolution, then A pulls.
@@ -193,5 +192,62 @@ func TestConcurrentEditYieldsOneConflictCopy(t *testing.T) {
 	all := read(t, va, "n.html") + read(t, va, cp)
 	if !strings.Contains(all, "A-edit") || !strings.Contains(all, "B-edit") {
 		t.Fatalf("an edit was lost; converged content: %q", all)
+	}
+}
+
+// TestSimultaneousDetectionDedupes is the P4 fix for P1's known limitation: when
+// BOTH devices detect the same divergence before either publishes a resolution,
+// deterministic conflict ids must still yield exactly ONE conflict copy (same
+// path, same content) on both, not two.
+func TestSimultaneousDetectionDedupes(t *testing.T) {
+	va, ea, vb, eb := twoDevices(t)
+	mustWrite(t, va, "n.html", note("W", "<p>base</p>"))
+	ea.Sync()
+	eb.Sync()
+
+	// Both edit offline and each publishes its OWN edit, BEFORE pulling the other.
+	mustWrite(t, va, "n.html", note("W", "<p>A-edit</p>"))
+	mustWrite(t, vb, "n.html", note("W", "<p>B-edit</p>"))
+	// First Sync on each: scanLocal + push (publishes own edit); the pull in the
+	// same cycle may already see the peer — so run a second round to let BOTH
+	// detect against the other's published edit.
+	ea.Sync()
+	eb.Sync()
+	ra, _ := ea.Sync()
+	rb, _ := eb.Sync()
+
+	// Drive to quiescence.
+	for i := 0; i < 3; i++ {
+		ea.Sync()
+		eb.Sync()
+	}
+
+	listConflicts := func(v *vault.Vault) []string {
+		notes, _ := v.List()
+		var c []string
+		for _, n := range notes {
+			if strings.Contains(n.Path, ".conflict-") {
+				c = append(c, n.Path)
+			}
+		}
+		return c
+	}
+	ca, cb := listConflicts(va), listConflicts(vb)
+	if len(ca) != 1 || len(cb) != 1 {
+		t.Fatalf("simultaneous detection must dedup to ONE conflict copy each: A=%v B=%v (ra=%v rb=%v)", ca, cb, ra.ConflictCopies, rb.ConflictCopies)
+	}
+	if ca[0] != cb[0] {
+		t.Fatalf("conflict copy path must be deterministic across devices: A=%q B=%q", ca[0], cb[0])
+	}
+	// Fully converged: identical main + identical copy, both edits present.
+	if read(t, va, "n.html") != read(t, vb, "n.html") {
+		t.Fatal("main note did not converge")
+	}
+	if read(t, va, ca[0]) != read(t, vb, cb[0]) {
+		t.Fatal("conflict copy did not converge")
+	}
+	all := read(t, va, "n.html") + read(t, va, ca[0])
+	if !strings.Contains(all, "A-edit") || !strings.Contains(all, "B-edit") {
+		t.Fatalf("an edit was lost: %q", all)
 	}
 }

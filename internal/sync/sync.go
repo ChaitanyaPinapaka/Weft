@@ -341,38 +341,66 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 	return nil
 }
 
-// conflict keeps the local file untouched and materializes the remote version
-// as a sibling conflict-copy with its own new WeftID. The local entry's VV is
-// merged to the component-wise max so the divergence is recorded as resolved and
-// does not re-spawn copies on every future sync. No data is ever lost: both
-// versions live as first-class notes.
+// conflict resolves a concurrent divergence DETERMINISTICALLY so that two
+// devices which both detect the same conflict converge to exactly one copy
+// (the P1 limitation). The smaller blob id wins the canonical path; the larger
+// becomes a conflict-copy whose WeftID + path are a pure function of
+// (originalWeftID, sorted blob pair) — identical on every device. No data is
+// lost: both versions always exist as first-class notes. Same-content "conflict"
+// (identical bytes under concurrent VVs) just merges the version vectors.
 func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
-	content, err := e.getBlob(r.BlobID)
-	if err != nil {
-		return nil // remote blob not present yet; retry next pull
+	merged := maxVV(l.VV, r.VV)
+	if l.BlobID == r.BlobID { // same content, concurrent VV — not a real divergence
+		l.VV = merged
+		e.st.Manifest[id] = l
+		return nil
 	}
-	cpath := conflictPath(l.Path, r)
-	// Give the copy its own identity so it's a distinct, surfacing note.
-	cid := noteid.Derive(cpath, content)
-	stamped, err := noteid.WithWeftID(content, cid)
+
+	winBlob, loseBlob := l.BlobID, r.BlobID
+	if loseBlob < winBlob {
+		winBlob, loseBlob = loseBlob, winBlob // canonical: smaller id wins the main path
+	}
+	winContent, err := e.getBlob(winBlob)
 	if err != nil {
-		stamped = content
+		return nil // a blob isn't uploaded yet; retry next pull
+	}
+	loseContent, err := e.getBlob(loseBlob)
+	if err != nil {
+		return nil
+	}
+
+	// Main path takes the deterministic winner (may overwrite local — but the
+	// local version is preserved as the copy below, so nothing is lost).
+	if e.st.Manifest[id].BlobID != winBlob {
+		if err := e.v.Write(l.Path, winContent); err != nil {
+			return err
+		}
+	}
+	e.st.Manifest[id] = Entry{
+		WeftID: id, Path: l.Path, VV: merged, BlobID: winBlob,
+		Size: int64(len(winContent)), MTime: time.Now().Unix(),
+	}
+
+	// The loser becomes a conflict-copy with a deterministic id + path, stamped
+	// so it's a distinct surfacing note. Both devices compute the same cid and
+	// the same stamped bytes, so the copy dedups to exactly one across the vault.
+	cid := deriveConflictID(id, winBlob, loseBlob)
+	cpath := conflictPath(l.Path, cid)
+	stamped, err := noteid.WithWeftID(loseContent, cid)
+	if err != nil {
+		stamped = loseContent
 	}
 	if err := e.v.Write(cpath, stamped); err != nil {
 		return err
 	}
-	// Record the conflict-copy as a brand-new local note so it propagates.
 	bid, err := e.putBlob(stamped)
 	if err != nil {
 		return err
 	}
 	e.st.Manifest[cid] = Entry{
-		WeftID: cid, Path: cpath, VV: VV{e.st.Device: 1},
-		BlobID: bid, Size: int64(len(stamped)), MTime: time.Now().Unix(),
+		WeftID: cid, Path: cpath, VV: merged.clone(), BlobID: bid,
+		Size: int64(len(stamped)), MTime: time.Now().Unix(),
 	}
-	// Resolve the original's divergence: local file stays, VV jumps to max.
-	l.VV = maxVV(l.VV, r.VV)
-	e.st.Manifest[id] = l
 	res.ConflictCopies = append(res.ConflictCopies, cpath)
 	return nil
 }
@@ -390,14 +418,18 @@ func blobID(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// conflictPath builds a sibling path for a conflict copy. P1 uses the peer
-// device + date; P4 makes the copy's identity deterministic across devices.
-func conflictPath(base string, r Entry) string {
+// deriveConflictID is a deterministic id for the conflict copy of `orig`,
+// computed from the sorted diverging blob pair so every device that sees the
+// same two versions produces the same id (and therefore the same single copy).
+func deriveConflictID(orig, winBlob, loseBlob string) string {
+	sum := sha256.Sum256([]byte("weft/conflict\x00" + orig + "\x00" + winBlob + "\x00" + loseBlob))
+	s := hex.EncodeToString(sum[:16])
+	return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
+}
+
+// conflictPath is the deterministic sibling path for a conflict copy with id cid.
+func conflictPath(base, cid string) string {
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
-	short := r.WeftID
-	if len(short) > 8 {
-		short = short[:8]
-	}
-	return fmt.Sprintf("%s.conflict-%s%s", stem, short, ext)
+	return fmt.Sprintf("%s.conflict-%s%s", stem, cid[:8], ext)
 }
