@@ -1,4 +1,4 @@
-.PHONY: run build build-ort test test-ort lint clean
+.PHONY: run build build-ort release test test-ort lint clean
 
 VAULT ?= ~/notes
 BINARY = bin/weft
@@ -19,6 +19,21 @@ build-ort:
 	CGO_LDFLAGS="-L/opt/homebrew/lib" \
 		go build -tags ORT -o $(BINARY) ./cmd/weft
 	@echo "built $(BINARY) (ORT enabled)"
+
+# release cross-compiles the pure-Go binary for every common device, so you can
+# drop `weft` on any machine and `weft sync join`. These builds omit ORT
+# embeddings (CGO + per-platform libs); semantic surfacing is an optional local
+# upgrade via `make build-ort`. Sync + the brain's recency/backlink/co-access
+# signals work fully without it.
+release:
+	@mkdir -p dist
+	@for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/amd64; do \
+		os=$${target%/*}; arch=$${target#*/}; ext=""; \
+		[ "$$os" = "windows" ] && ext=".exe"; \
+		echo "  $$os/$$arch"; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o dist/weft-$$os-$$arch$$ext ./cmd/weft || exit 1; \
+	done
+	@echo "built dist/ for darwin, linux, windows"
 
 test:
 	go test ./...

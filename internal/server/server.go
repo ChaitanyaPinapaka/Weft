@@ -66,6 +66,9 @@ func Run(vaultPath string) error {
 	// Live, runtime-tunable surfacing weights (persisted in the index).
 	ps := newParamStore(ix)
 
+	// If sync is configured, converge through the E2EE bucket in the background.
+	startAutoSync(v, ix, emb)
+
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
 	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
