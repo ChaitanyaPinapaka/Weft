@@ -1,4 +1,5 @@
 bin/
+dist/
 .weft/
 *.db
 *.db-journal

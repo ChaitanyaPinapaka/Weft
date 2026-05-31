@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP — Weft</title>
+<meta name="description" content="Run weft mcp to expose your vault to Claude Code over stdio — read, search, surface, and write notes from inside Claude Code.">
+<meta property="og:title" content="MCP — Weft">
+<meta property="og:description" content="Run weft mcp to expose your vault to Claude Code over stdio — read, search, surface, and write notes from inside Claude Code.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2020%2020'%3E%3Cg%20stroke='%232563eb'%20stroke-width='1.8'%20stroke-linecap='round'%3E%3Cpath%20d='M2%206h16M2%2010h16M2%2014h16'/%3E%3Cpath%20d='M6%203v14M12%203v14'%20opacity='.35'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="color:var(--accent)"><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6h16M2 10h16M2 14h16"/><path d="M6 3v14M12 3v14" opacity="0.35"/></g></svg><span>Weft</span></a>
+  <nav>
+    <a href="/docs/" aria-current="page">Docs</a>
+    <a href="/install.html">Install</a>
+  </nav>
+</div></header>
+<main><div class="wrap"><div class="docs">
+<nav class="docnav">
+<a href="/docs/">Overview</a>
+<h4>Start</h4>
+<a href="/docs/getting-started.html">Getting started</a>
+<h4>Concepts</h4>
+<a href="/docs/concepts.html">Concepts</a>
+<h4>Sync</h4>
+<a href="/docs/sync.html">Sync</a>
+<a href="/docs/devices.html">Devices</a>
+<h4>Reference</h4>
+<a href="/docs/mcp.html" aria-current="page">MCP</a>
+<a href="/docs/import.html">Import</a>
+<a href="/docs/cli.html">CLI</a>
+</nav>
+<article class="doc">
+<h1>MCP for Claude Code</h1>
+
+<p class="lede">Weft ships an MCP server. Point Claude Code at your vault and it can read, search, surface, and write notes — directly, without copy-paste.</p>
+
+<h2>What it does</h2>
+
+<p><code>weft mcp &lt;vault-path&gt;</code> runs an MCP server over stdio. Claude Code launches it as a subprocess, talks to it on stdin/stdout, and gets access to the same vault the daemon owns: it can read notes, run full-text search, ask for what the brain panel would surface, and write new notes back to disk.</p>
+
+<p>The vault stays plain <code>.html</code> on disk. Claude Code is just another surface over the one source of truth.</p>
+
+<h2>Run the server</h2>
+
+<pre><code><span class="tok-c"># stdio MCP server, scoped to one vault</span>
+<span class="tok-cmd">weft</span> mcp ~/notes</code></pre>
+
+<p>You normally don't run this by hand — Claude Code starts it for you once it's registered.</p>
+
+<h2>Register it with Claude Code</h2>
+
+<p>Add an MCP server entry that runs <code>weft mcp</code> against your vault. In your Claude Code MCP config:</p>
+
+<pre><code>{
+  "mcpServers": {
+    "weft": {
+      "command": "weft",
+      "args": ["mcp", "/Users/you/notes"]
+    }
+  }
+}</code></pre>
+
+<p>Use the absolute path to your vault. If <code>weft</code> isn't on Claude Code's <code>PATH</code>, give the full path to the binary as <code>command</code> (for example <code>/usr/local/bin/weft</code>).</p>
+
+<div class="note"><strong>Restart to pick it up.</strong> After editing the config, restart Claude Code so it spawns the server. The tools then appear under the <code>weft</code> server.</div>
+
+<h2>What Claude Code can do</h2>
+
+<table>
+<tr><th>Capability</th><th>Backed by</th></tr>
+<tr><td>Read a note</td><td>The <code>.html</code> file on disk</td></tr>
+<tr><td>Search the vault</td><td>SQLite FTS5 lexical search</td></tr>
+<tr><td>Surface related notes</td><td>The same signals as the brain panel — backlinks, recency, co-access</td></tr>
+<tr><td>Write a note</td><td>New <code>.html</code> in the vault; indexed on save</td></tr>
+</table>
+
+<div class="note"><strong>Semantic neighbors need the source build.</strong> Surfacing works fully on recency, backlinks, and co-access in the prebuilt binary. Semantic similarity requires the local embedding model from <code>make build-ort</code>. Without it, surfacing still returns useful results — just without the embedding-based neighbors.</div>
+
+<h2>Notes stay safe</h2>
+
+<p>Weft never deletes notes. Writes from Claude Code create or update <code>.html</code> files; nothing is removed by the system. As with every Weft surface, the vault is yours and remains openable in any browser.</p>
+
+<p class="muted">See also <a href="/docs/cli.html">the CLI reference</a> for <code>weft capture</code> and <code>weft clip</code>, and <a href="/docs/concepts.html">concepts</a> for how surfacing works.</p>
+</article>
+</div></div></main>
+<footer class="site"><div class="wrap">
+  <span>Weft — your notes, woven.</span>
+  <span class="muted">local-first · end-to-end encrypted · no accounts</span>
+  <span class="sep"></span>
+  <a href="/docs/">Docs</a>
+  <a href="/install.html">Install</a>
+</div></footer>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button');
+  b.className = 'copy'; b.type = 'button'; b.textContent = 'copy';
+  b.addEventListener('click', function () {
+    var code = pre.querySelector('code');
+    navigator.clipboard.writeText((code || pre).innerText.replace(/\n+$/, '')).then(function () {
+      b.textContent = 'copied'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = 'copy'; b.classList.remove('ok'); }, 1200);
+    });
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

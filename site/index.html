@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — surfacing, not searching</title>
+<meta name="description" content="A local-first HTML vault that surfaces what your brain would recall now — backlinks, semantic neighbors, co-accessed notes. Yours, on disk, optionally synced end-to-end encrypted.">
+<meta property="og:title" content="Weft — surfacing, not searching">
+<meta property="og:description" content="A local-first HTML vault that surfaces what your brain would recall now — backlinks, semantic neighbors, co-accessed notes. Yours, on disk, optionally synced end-to-end encrypted.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2020%2020'%3E%3Cg%20stroke='%232563eb'%20stroke-width='1.8'%20stroke-linecap='round'%3E%3Cpath%20d='M2%206h16M2%2010h16M2%2014h16'/%3E%3Cpath%20d='M6%203v14M12%203v14'%20opacity='.35'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="color:var(--accent)"><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6h16M2 10h16M2 14h16"/><path d="M6 3v14M12 3v14" opacity="0.35"/></g></svg><span>Weft</span></a>
+  <nav>
+    <a href="/docs/">Docs</a>
+    <a href="/install.html">Install</a>
+  </nav>
+</div></header>
+<main>
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Surfacing, not searching</p>
+    <h1>Open a note. See what your brain would recall now.</h1>
+    <p class="lede">A thousand notes, and you recall maybe forty. The rest are dormant, not gone. Weft is a folder of plain <code>.html</code> files you own. Open any note and it surfaces what connects to it: backlinks, semantic neighbors, co-accessed notes, this day in past years. No search bar. The connection finds you.</p>
+    <div class="threads"></div>
+    <div class="btns">
+      <a class="btn primary" href="/install.html">Install Weft</a>
+      <a class="btn" href="/docs/">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>How surfacing works</h2>
+  <p class="muted">Search makes you name what you want first; recall doesn't. Open any note and a brain panel shows the notes your memory would reach for. Ranking uses an ACT-R-style activation model: base-level activation from recency and frequency, so notes decay like memory, plus spreading activation across your links.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Backlinks</h3>
+      <p>Parsed from <code>&lt;a href&gt;</code> on every save. See what points here without maintaining anything by hand.</p>
+    </div>
+    <div class="card">
+      <h3>Semantic neighbors</h3>
+      <p>Notes about the same thing, even with no shared link. Built from local embeddings.</p>
+    </div>
+    <div class="card">
+      <h3>Recently co-accessed</h3>
+      <p>The notes you tend to open alongside this one resurface together.</p>
+    </div>
+    <div class="card">
+      <h3>This day in past years</h3>
+      <p>What you wrote on this date before, surfaced when it is relevant again.</p>
+    </div>
+  </div>
+  <p class="muted">An explain toggle shows <em>why</em> each note surfaced, and a tuning page lets you adjust the weights. Dormant notes rank lower but are never removed. Full-text search (SQLite FTS5) is there as a fallback, not the front door.</p>
+  <div class="note"><strong>On embeddings:</strong> recency, backlinks, and co-access surfacing work fully in the prebuilt binary. Semantic neighbors require building from source with <code>make build-ort</code>, which swaps in a local CPU model (all-MiniLM-L6-v2, 384-dim, ~22-30MB) via ONNX. Local, no API.</div>
+</section>
+
+<section class="wrap">
+  <h2>Own your files. Sync without trusting anyone.</h2>
+  <p class="muted">HTML is the canonical format — never a markdown intermediate. Notes are publishable as-is, and clipping a web page is essentially a copy. The index (SQLite, FTS5, embeddings, backlinks) is derived and rebuilt on each device; it is never synced.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Plain HTML on disk</h3>
+      <p>A folder you own, sub-folders allowed. Delete Weft tomorrow and every note still opens in any browser.</p>
+    </div>
+    <div class="card">
+      <h3>No accounts, no server</h3>
+      <p>There is no Weft account and no server we run. One Go binary, a local daemon at <code>localhost:7777</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Bring your own cloud</h3>
+      <p>Optional sync runs through object storage you own: Cloudflare R2, AWS S3, Backblaze B2, MinIO, or any S3-compatible bucket.</p>
+    </div>
+    <div class="card">
+      <h3>End-to-end encrypted</h3>
+      <p>One vault key, generated on your device and never uploaded. Blobs and manifests sealed with XChaCha20-Poly1305.</p>
+    </div>
+  </div>
+  <div class="note"><strong>The cloud holds only ciphertext.</strong> The vault key never leaves your devices, and your cloud credentials decrypt nothing. Sync is file-level, not CRDT, so the HTML stays clean. Concurrent edits are detected by version vectors and become a conflict-copy — never a silent overwrite, never data loss. Deletions go to a <code>.trash</code> folder, not gone.</div>
+  <p class="muted">Add a second device without retyping a passphrase: <code>weft sync pair</code> prints a code, <code>weft sync pair-approve</code> confirms it, and both screens show an 8-digit code you compare to defeat a man-in-the-middle. Lose every device and a 24-word recovery phrase rebuilds the vault. <a href="/docs/sync.html">How sync works</a>.</p>
+</section>
+
+<section class="wrap">
+  <h2>One daemon, many surfaces</h2>
+  <p class="muted">Every surface is a thin client over the same local daemon, so there is one source of truth.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>MCP for Claude Code</h3>
+      <p><code>weft mcp &lt;vault&gt;</code> exposes the vault over stdio. Claude Code can read, search, surface, and write notes directly. <a href="/docs/mcp.html">Set up MCP</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Desktop web app</h3>
+      <p>Vault browser, reader, a TipTap editor with <code>[[wikilinks]]</code> and daily notes, the brain panel, and a graph view of your links.</p>
+    </div>
+    <div class="card">
+      <h3>Browser extension</h3>
+      <p>A web clipper plus brain-panel sidebar, proxied through the daemon — no CORS, no third party.</p>
+    </div>
+    <div class="card">
+      <h3>CLI</h3>
+      <p>Capture, clip, import, and sync from the terminal where you already live.</p>
+    </div>
+  </div>
+  <pre><code><span class="tok-c"># append a thought to today's daily note</span>
+<span class="tok-cmd">weft</span> capture "the weft is the thread woven through the warp"
+
+<span class="tok-c"># clip a page into the vault</span>
+<span class="tok-cmd">weft</span> clip https://example.com/article
+
+<span class="tok-c"># pull in your old notes</span>
+<span class="tok-cmd">weft</span> import markdown ~/old-notes
+
+<span class="tok-c"># let Claude Code work in your vault</span>
+<span class="tok-cmd">weft</span> mcp ~/notes</code></pre>
+  <p class="muted"><code>weft import</code> brings in markdown, a Notion export, a bookmarks HTML export, or Apple Notes.</p>
+</section>
+
+<section class="wrap center">
+  <h2>Install in one line</h2>
+  <p class="lede">Prebuilt pure-Go binaries for macOS, Linux, and Windows (arm64 + amd64). No runtime dependencies.</p>
+  <pre><code><span class="tok-c"># macOS / Linux</span>
+curl -fsSL https://tryweft.app/install.sh | sh
+
+<span class="tok-c"># then point it at a folder</span>
+<span class="tok-cmd">weft</span> serve ~/notes</code></pre>
+  <p class="muted">Windows: download <code>weft-windows-amd64.exe</code> and add it to your PATH.</p>
+  <div class="btns center">
+    <a class="btn primary" href="/install.html">Install options</a>
+    <a class="btn" href="/docs/getting-started.html">Getting started</a>
+  </div>
+</section>
+</main>
+<footer class="site"><div class="wrap">
+  <span>Weft — your notes, woven.</span>
+  <span class="muted">local-first · end-to-end encrypted · no accounts</span>
+  <span class="sep"></span>
+  <a href="/docs/">Docs</a>
+  <a href="/install.html">Install</a>
+</div></footer>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button');
+  b.className = 'copy'; b.type = 'button'; b.textContent = 'copy';
+  b.addEventListener('click', function () {
+    var code = pre.querySelector('code');
+    navigator.clipboard.writeText((code || pre).innerText.replace(/\n+$/, '')).then(function () {
+      b.textContent = 'copied'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = 'copy'; b.classList.remove('ok'); }, 1200);
+    });
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

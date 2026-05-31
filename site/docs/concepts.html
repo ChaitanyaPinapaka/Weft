@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concepts — Weft</title>
+<meta name="description" content="How Weft thinks: HTML files you own, surfacing over searching, and an ACT-R memory-activation model that ranks what your brain would recall right now.">
+<meta property="og:title" content="Concepts — Weft">
+<meta property="og:description" content="How Weft thinks: HTML files you own, surfacing over searching, and an ACT-R memory-activation model that ranks what your brain would recall right now.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2020%2020'%3E%3Cg%20stroke='%232563eb'%20stroke-width='1.8'%20stroke-linecap='round'%3E%3Cpath%20d='M2%206h16M2%2010h16M2%2014h16'/%3E%3Cpath%20d='M6%203v14M12%203v14'%20opacity='.35'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="color:var(--accent)"><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6h16M2 10h16M2 14h16"/><path d="M6 3v14M12 3v14" opacity="0.35"/></g></svg><span>Weft</span></a>
+  <nav>
+    <a href="/docs/" aria-current="page">Docs</a>
+    <a href="/install.html">Install</a>
+  </nav>
+</div></header>
+<main><div class="wrap"><div class="docs">
+<nav class="docnav">
+<a href="/docs/">Overview</a>
+<h4>Start</h4>
+<a href="/docs/getting-started.html">Getting started</a>
+<h4>Concepts</h4>
+<a href="/docs/concepts.html" aria-current="page">Concepts</a>
+<h4>Sync</h4>
+<a href="/docs/sync.html">Sync</a>
+<a href="/docs/devices.html">Devices</a>
+<h4>Reference</h4>
+<a href="/docs/mcp.html">MCP</a>
+<a href="/docs/import.html">Import</a>
+<a href="/docs/cli.html">CLI</a>
+</nav>
+<article class="doc">
+<h1>Concepts</h1>
+<p class="lede">Weft is built on two ideas: your notes are real HTML files you own, and the way you find them again is surfacing, not searching. This page explains the model behind both.</p>
+
+<h2>HTML is canonical</h2>
+<p>Your vault is a folder of <code>.html</code> files on disk. Sub-folders are allowed. That is the whole storage format — there is no database of record, no proprietary container, no markdown intermediate that gets converted on the way in or out. What you write is what is on disk.</p>
+<p>This has consequences worth being explicit about:</p>
+<ul>
+  <li><strong>You own the files.</strong> Delete Weft and your notes are still there, openable in any browser. No accounts, no lock-in.</li>
+  <li><strong>Notes are publishable as-is.</strong> HTML is already a web page, so clipping a page is essentially a copy, and a note can be served without a build step.</li>
+  <li><strong>Nothing is ever deleted by Weft.</strong> Dormant notes rank lower in surfacing; they are never removed. (When sync removes a file, it moves to a <code>.trash</code> folder rather than vanishing.)</li>
+</ul>
+<div class="note">
+  <strong>Why HTML over markdown?</strong> HTML is the native format of the web and of the things you clip, and it carries rich structure cleanly. A markdown layer would mean a lossy round-trip on every save. Weft refuses that trade.
+</div>
+
+<h2>The index is derived, never authored</h2>
+<p>Everything Weft needs to be fast lives in a SQLite index built <em>from</em> the HTML — never the other way around. It holds an FTS5 full-text table for lexical search, an embeddings blob for semantic similarity, and backlinks parsed from <code>&lt;a href&gt;</code> on each save.</p>
+<p>The index is disposable. Each device rebuilds it from the <code>.html</code> files, so it is never synced and never the source of truth. If it is lost, it regenerates. Your notes are the data; the index is a cache.</p>
+
+<h2>Surfacing, not searching</h2>
+<p>A search bar makes you supply the cue. Weft does the opposite: open any note and the <strong>brain panel</strong> shows what your brain would surface right now, given where you are. It draws on four kinds of association:</p>
+<table>
+  <tr><th>Signal</th><th>What it surfaces</th></tr>
+  <tr><td>Backlinks</td><td>Notes that link to the one you are reading, parsed from <code>&lt;a href&gt;</code>.</td></tr>
+  <tr><td>Semantic neighbors</td><td>Notes that are <em>about</em> the same thing, by embedding similarity — even with no shared words or links.</td></tr>
+  <tr><td>Co-accessed</td><td>Notes you have recently opened around the same time as this one.</td></tr>
+  <tr><td>This day in past years</td><td>Notes from this calendar date in prior years.</td></tr>
+</table>
+<p>The point is cue-driven, associative recall — the closest software analog to how memory actually works. You arrive somewhere and the related things come to you.</p>
+
+<h2>The ranking model: ACT-R memory activation</h2>
+<p>What surfaces, and in what order, is decided by a memory-activation model borrowed from ACT-R, the cognitive architecture. Each note has an <strong>activation</strong> score with two parts:</p>
+<ul>
+  <li><strong>Base-level activation</strong> — from recency and frequency of access. Notes decay like memory: the longer since you touched one, the lower it ranks. This is the dormancy signal, and it only affects ranking, never retention.</li>
+  <li><strong>Spreading activation</strong> — activation flows outward from your current context across links and associations, so notes connected to where you are get a lift.</li>
+</ul>
+<p>The result is a list that reflects both how memorable a note is on its own and how related it is to the moment. Because activation decays, the panel stays current instead of accreting everything you have ever written.</p>
+<div class="note">
+  <strong>Explain why.</strong> The brain panel has an <strong>explain</strong> toggle: turn it on and each surfaced note shows the signals that put it there — the backlink, the similarity, the co-access, the date. A separate tuning page lets you adjust the weights behind the model if the defaults do not match how you think.
+</div>
+
+<h2>What works in the prebuilt binary</h2>
+<p>One distinction matters. The one-line-installer binary ships a <strong>stub embedder</strong>, so semantic neighbors are the one signal it does not compute. Everything else in the model — backlinks, co-access, this-day, recency and frequency decay, spreading activation — works fully out of the box.</p>
+<p>Semantic neighbors are an opt-in upgrade you get by building from source. <code>make build-ort</code> swaps in a local CPU embedding model (all-MiniLM-L6-v2, 384-dimensional, ~22–30 MB) via ONNX. It runs entirely on your machine — no API, nothing leaves the device.</p>
+<pre><code><span class="tok-c"># default build: every signal except semantic neighbors</span>
+<span class="tok-cmd">make</span> build
+
+<span class="tok-c"># add local CPU embeddings for semantic neighbors</span>
+<span class="tok-cmd">make</span> build-ort</code></pre>
+<p class="muted">See <a href="/install.html">Install</a> for the from-source steps.</p>
+
+<h2>Search is the fallback, not the front door</h2>
+<p>Full-text search exists — it is the FTS5 table in the index — but it is deliberately not the primary interface. Surfacing is how you find things you were not explicitly looking for; search is there for the times you know exactly the word you want and just need to jump to it.</p>
+
+<h2>In short</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Files you own</h3>
+    <p>Plain <code>.html</code> in a folder. No markdown layer, no lock-in, nothing ever deleted by the system.</p>
+  </div>
+  <div class="card">
+    <h3>A derived index</h3>
+    <p>SQLite with FTS5, embeddings, and parsed backlinks — rebuilt from the HTML, never the source of truth.</p>
+  </div>
+  <div class="card">
+    <h3>Surfacing over search</h3>
+    <p>The brain panel shows backlinks, semantic neighbors, co-accessed notes, and this-day-in-past-years.</p>
+  </div>
+  <div class="card">
+    <h3>Memory-style ranking</h3>
+    <p>ACT-R activation: recency and frequency decay plus spreading activation, with an explain toggle.</p>
+  </div>
+</div>
+<div class="btns">
+  <a class="btn primary" href="/docs/getting-started.html">Getting started</a>
+  <a class="btn" href="/install.html">Install</a>
+</div>
+</article>
+</div></div></main>
+<footer class="site"><div class="wrap">
+  <span>Weft — your notes, woven.</span>
+  <span class="muted">local-first · end-to-end encrypted · no accounts</span>
+  <span class="sep"></span>
+  <a href="/docs/">Docs</a>
+  <a href="/install.html">Install</a>
+</div></footer>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button');
+  b.className = 'copy'; b.type = 'button'; b.textContent = 'copy';
+  b.addEventListener('click', function () {
+    var code = pre.querySelector('code');
+    navigator.clipboard.writeText((code || pre).innerText.replace(/\n+$/, '')).then(function () {
+      b.textContent = 'copied'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = 'copy'; b.classList.remove('ok'); }, 1200);
+    });
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

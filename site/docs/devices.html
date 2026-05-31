@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Devices — Weft</title>
+<meta name="description" content="Add a device with weft sync pair (no passphrase), compare the 8-digit SAS, and confirm. Plus keychain caching and 24-word recovery.">
+<meta property="og:title" content="Devices — Weft">
+<meta property="og:description" content="Add a device with weft sync pair (no passphrase), compare the 8-digit SAS, and confirm. Plus keychain caching and 24-word recovery.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2020%2020'%3E%3Cg%20stroke='%232563eb'%20stroke-width='1.8'%20stroke-linecap='round'%3E%3Cpath%20d='M2%206h16M2%2010h16M2%2014h16'/%3E%3Cpath%20d='M6%203v14M12%203v14'%20opacity='.35'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="color:var(--accent)"><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6h16M2 10h16M2 14h16"/><path d="M6 3v14M12 3v14" opacity="0.35"/></g></svg><span>Weft</span></a>
+  <nav>
+    <a href="/docs/" aria-current="page">Docs</a>
+    <a href="/install.html">Install</a>
+  </nav>
+</div></header>
+<main><div class="wrap"><div class="docs">
+<nav class="docnav">
+<a href="/docs/">Overview</a>
+<h4>Start</h4>
+<a href="/docs/getting-started.html">Getting started</a>
+<h4>Concepts</h4>
+<a href="/docs/concepts.html">Concepts</a>
+<h4>Sync</h4>
+<a href="/docs/sync.html">Sync</a>
+<a href="/docs/devices.html" aria-current="page">Devices</a>
+<h4>Reference</h4>
+<a href="/docs/mcp.html">MCP</a>
+<a href="/docs/import.html">Import</a>
+<a href="/docs/cli.html">CLI</a>
+</nav>
+<article class="doc">
+<h1>Adding devices &amp; recovery</h1>
+
+<p class="lede">Once sync is initialized, you can enroll more devices and recover a vault if you lose them all. The vault key is never uploaded; every method below hands it over end-to-end or rebuilds it from a phrase you hold.</p>
+
+<div class="note"><strong>Prerequisite.</strong> Sync must already be set up on at least one device with <code>weft sync init</code>. See <a href="/docs/sync.html">Sync</a> for the full model. New devices read and write only ciphertext in your own bucket; Weft runs no server.</div>
+
+<h2>Two ways to enroll a device</h2>
+
+<p>Both methods end with the same result: the new device holds the vault key and caches it in the OS keychain. They differ only in how the key reaches the new device.</p>
+
+<table>
+<tr><th>Method</th><th>What you provide</th><th>Best when</th></tr>
+<tr><td><code>weft sync pair</code></td><td>Nothing typed on the new device; you confirm an 8-digit code on both screens</td><td>You have access to an already-enrolled device</td></tr>
+<tr><td><code>weft sync join</code></td><td>The shared passphrase</td><td>You only have the passphrase, not another device</td></tr>
+</table>
+
+<h2>Pairing without the passphrase</h2>
+
+<p>Pairing transfers the vault key from an enrolled device to a new one without anyone typing the passphrase. It is the recommended path.</p>
+
+<p>On the <strong>new</strong> device, start pairing. It prints a pairing code.</p>
+
+<pre><code><span class="tok-cmd">weft</span> sync pair</code></pre>
+
+<p>On an <strong>already-enrolled</strong> device, approve that code.</p>
+
+<pre><code><span class="tok-cmd">weft</span> sync pair-approve &lt;code&gt;</code></pre>
+
+<p>Both screens then show an <strong>8-digit code</strong> — a short authentication string (SAS). Compare the two codes. If they match, confirm on both devices; if they differ, abort. Only after both sides confirm is the vault key handed over.</p>
+
+<div class="note"><strong>Why the SAS matters.</strong> The key handover is end-to-end encrypted and resistant to a man-in-the-middle — including the cloud itself. The 8-digit code is what closes that gap: a network or storage attacker who tried to interpose would produce a different SAS on each screen. Comparing the digits out-of-band (read them aloud, look at both screens) is the step that makes the transfer MITM-resistant. Do not skip it.</div>
+
+<h2>Enrolling with the passphrase</h2>
+
+<p>If you do not have a second device on hand, enroll with the shared passphrase instead.</p>
+
+<pre><code><span class="tok-cmd">weft</span> sync join</code></pre>
+
+<p>This derives access from the passphrase you set at <code>weft sync init</code>. After joining, the device caches the vault key locally just like pairing does.</p>
+
+<h2>After enrollment: the keychain</h2>
+
+<p>Once a device is enrolled — by pairing or joining — the vault key is cached in the OS keychain:</p>
+
+<table>
+<tr><th>Platform</th><th>Store</th></tr>
+<tr><td>macOS</td><td>Keychain</td></tr>
+<tr><td>Linux</td><td>Secret Service</td></tr>
+<tr><td>Windows</td><td>Credential Manager</td></tr>
+</table>
+
+<p>Because the key is cached, the daemon and <code>weft sync</code> need no passphrase on that device going forward. The passphrase is only for the initial <code>join</code>; the key itself lives in the keychain, not in your bucket.</p>
+
+<div class="note"><strong>Headless hosts.</strong> On a server with no keychain, force the on-disk fallback with <code>WEFT_SECRET_STORE=file</code>. The key is then written to a <code>0600</code> file. Protect that host accordingly — anyone who can read the file can decrypt the vault.</div>
+
+<h2>Recovery: the 24-word phrase</h2>
+
+<p>The recovery phrase is your escape hatch if every device is lost. Print it on a device that already has the vault, and store it offline.</p>
+
+<pre><code><span class="tok-cmd">weft</span> sync recovery</code></pre>
+
+<p>This prints a <strong>24-word phrase</strong>. Write it down and keep it somewhere physical and private. It can reconstruct the vault key, so treat it with the same care as the key itself — anyone holding it can decrypt your vault.</p>
+
+<p>To rebuild a vault from the phrase on a fresh machine:</p>
+
+<pre><code><span class="tok-c"># pass the phrase inline, or via stdin / WEFT_RECOVERY_PHRASE</span>
+<span class="tok-cmd">weft</span> sync recover --phrase "word1 word2 ... word24"</code></pre>
+
+<p>Recovery rebuilds the vault from the ciphertext in your bucket using the key the phrase derives. The local SQLite index is not synced; each device rebuilds it from the <code>.html</code> files after recovery.</p>
+
+<h2>The security model, precisely</h2>
+
+<div class="grid">
+<div class="card"><h3>One key, never uploaded</h3><p>The vault key is generated on your first device and never leaves it over the network. Pairing and recovery move or reconstruct that key; the bucket never holds it.</p></div>
+<div class="card"><h3>Cloud sees only ciphertext</h3><p>Blobs and manifests are sealed with XChaCha20-Poly1305. Cloud credentials are separate from the vault key and decrypt nothing. A compromised bucket leaks no plaintext.</p></div>
+<div class="card"><h3>SAS-checked handover</h3><p>Pairing transfers the key end-to-end. The 8-digit SAS on both screens is what makes it man-in-the-middle resistant. Compare before confirming.</p></div>
+<div class="card"><h3>Tamper detection</h3><p>A per-device Ed25519-signed HEAD bound to the manifest by hash, a sealed device registry, and rollback detection mean the cloud cannot forge, splice, or silently roll back your history.</p></div>
+</div>
+
+<div class="note"><strong>Where the trust lives.</strong> Your security rests on three things you control: the passphrase, the keychain (or <code>0600</code> file) on each device, and the offline 24-word phrase. Lose all of them and the ciphertext in your bucket is unrecoverable — by design, since the cloud can decrypt nothing.</div>
+
+<h2>See also</h2>
+
+<p><a href="/docs/sync.html">Sync</a> for setup and convergence, and the <a href="/docs/cli.html">CLI reference</a> for every flag.</p>
+</article>
+</div></div></main>
+<footer class="site"><div class="wrap">
+  <span>Weft — your notes, woven.</span>
+  <span class="muted">local-first · end-to-end encrypted · no accounts</span>
+  <span class="sep"></span>
+  <a href="/docs/">Docs</a>
+  <a href="/install.html">Install</a>
+</div></footer>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button');
+  b.className = 'copy'; b.type = 'button'; b.textContent = 'copy';
+  b.addEventListener('click', function () {
+    var code = pre.querySelector('code');
+    navigator.clipboard.writeText((code || pre).innerText.replace(/\n+$/, '')).then(function () {
+      b.textContent = 'copied'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = 'copy'; b.classList.remove('ok'); }, 1200);
+    });
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

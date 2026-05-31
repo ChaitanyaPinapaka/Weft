@@ -1,0 +1,229 @@
+/* tryweft.app — static site styles. Echoes the Weft app palette (web/style.css):
+   neutral grays, one blue accent, light/dark via prefers-color-scheme, system-ui
+   + ui-monospace, 6px radius. No framework, no build step — like the vault, it's
+   just files. */
+
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --border: #e8e8e8;
+  --text: #1a1a1a;
+  --muted: #767676;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --radius: 6px;
+  --maxw: 760px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0f;
+    --surface: #161616;
+    --surface-2: #1c1c1c;
+    --border: #2a2a2a;
+    --text: #e8e8e8;
+    --muted: #8a8a8a;
+    --accent: #60a5fa;
+    --accent-text: #0f0f0f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* --- layout ------------------------------------------------------------- */
+
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+
+header.site {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+header.site .wrap {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  height: 56px;
+}
+header.site a { color: var(--text); text-decoration: none; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; margin-right: auto; }
+.brand svg { display: block; }
+header.site nav { display: flex; gap: 20px; }
+header.site nav a { color: var(--muted); font-size: 15px; }
+header.site nav a:hover, header.site nav a[aria-current="page"] { color: var(--text); }
+
+main { padding: 0 0 96px; }
+
+footer.site {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 14px;
+  padding: 28px 0 60px;
+}
+footer.site .wrap { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; }
+footer.site a { color: var(--muted); }
+footer.site a:hover { color: var(--text); }
+footer.site .sep { margin-left: auto; }
+
+/* --- typography --------------------------------------------------------- */
+
+h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.2; }
+h1 { font-size: 2.6rem; margin: 0 0 0.3em; }
+h2 { font-size: 1.55rem; margin: 2.4em 0 0.6em; }
+h3 { font-size: 1.15rem; margin: 1.8em 0 0.4em; }
+p { margin: 0 0 1em; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.lede { font-size: 1.25rem; color: var(--muted); line-height: 1.55; }
+strong { font-weight: 650; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5em 0; }
+
+ul, ol { padding-left: 1.3em; }
+li { margin: 0.3em 0; }
+
+/* --- hero --------------------------------------------------------------- */
+
+.hero { padding: 84px 0 56px; position: relative; }
+.hero h1 { max-width: 14ch; }
+.hero .lede { max-width: 56ch; margin-bottom: 1.6em; }
+/* the weft: horizontal threads, a faint woven motif behind the hero */
+.threads {
+  height: 3px;
+  background: repeating-linear-gradient(
+    90deg, var(--accent) 0 22px, transparent 22px 30px);
+  opacity: 0.5;
+  margin: 0 0 40px;
+  border-radius: 2px;
+}
+
+/* --- buttons ------------------------------------------------------------ */
+
+.btns { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  font-size: 15px; font-weight: 550;
+  border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  cursor: pointer; text-decoration: none;
+}
+.btn:hover { border-color: var(--muted); text-decoration: none; }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.btn.primary:hover { filter: brightness(1.07); }
+
+/* --- code --------------------------------------------------------------- */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+}
+pre {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 1.2em 0;
+}
+pre code { background: none; border: none; padding: 0; font-size: inherit; }
+pre .tok-c { color: var(--muted); }          /* comment */
+pre .tok-cmd { color: var(--accent); font-weight: 600; } /* command name */
+.copy {
+  position: absolute; top: 8px; right: 8px;
+  font: 12px var(--sans);
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px; cursor: pointer; opacity: 0; transition: opacity .12s;
+}
+pre:hover .copy { opacity: 1; }
+.copy.ok { color: var(--accent); }
+
+/* --- feature grid / cards ---------------------------------------------- */
+
+.grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; margin: 1.5em 0; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+.card h3 { margin-top: 0; }
+.card p:last-child { margin-bottom: 0; }
+.card .ico { color: var(--accent); margin-bottom: 6px; }
+
+/* --- callouts ----------------------------------------------------------- */
+
+.note {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 1.4em 0;
+  font-size: 15px;
+}
+.note strong { color: var(--text); }
+
+/* --- tables ------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; margin: 1.4em 0; font-size: 15px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 550; }
+td code { white-space: nowrap; }
+
+/* --- docs layout -------------------------------------------------------- */
+
+.docs { display: grid; grid-template-columns: 200px 1fr; gap: 48px; padding-top: 40px; align-items: start; }
+.docnav { position: sticky; top: 76px; font-size: 15px; }
+.docnav h4 { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 1.2em 0 0.5em; }
+.docnav a { display: block; color: var(--muted); padding: 3px 0; }
+.docnav a:hover { color: var(--text); text-decoration: none; }
+.docnav a[aria-current="page"] { color: var(--accent); }
+.doc h1 { font-size: 2rem; }
+.doc { min-width: 0; }
+
+/* --- misc --------------------------------------------------------------- */
+
+.eyebrow { color: var(--accent); font-size: 13px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 8px; }
+.muted { color: var(--muted); }
+.center { text-align: center; }
+
+@media (max-width: 720px) {
+  body { font-size: 16px; }
+  h1 { font-size: 2.1rem; }
+  .hero { padding: 56px 0 40px; }
+  .grid { grid-template-columns: 1fr; }
+  .docs { grid-template-columns: 1fr; gap: 24px; }
+  .docnav { position: static; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  header.site nav { gap: 14px; }
+  footer.site .sep { margin-left: 0; flex-basis: 100%; }
+}

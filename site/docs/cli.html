@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI — Weft</title>
+<meta name="description" content="Every Weft command and its flags, verbatim: serve, capture, clip, mcp, import, and the full sync subcommands — plus keychain and recovery-phrase environment notes.">
+<meta property="og:title" content="CLI — Weft">
+<meta property="og:description" content="Every Weft command and its flags, verbatim: serve, capture, clip, mcp, import, and the full sync subcommands — plus keychain and recovery-phrase environment notes.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2020%2020'%3E%3Cg%20stroke='%232563eb'%20stroke-width='1.8'%20stroke-linecap='round'%3E%3Cpath%20d='M2%206h16M2%2010h16M2%2014h16'/%3E%3Cpath%20d='M6%203v14M12%203v14'%20opacity='.35'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site"><div class="wrap">
+  <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" style="color:var(--accent)"><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6h16M2 10h16M2 14h16"/><path d="M6 3v14M12 3v14" opacity="0.35"/></g></svg><span>Weft</span></a>
+  <nav>
+    <a href="/docs/" aria-current="page">Docs</a>
+    <a href="/install.html">Install</a>
+  </nav>
+</div></header>
+<main><div class="wrap"><div class="docs">
+<nav class="docnav">
+<a href="/docs/">Overview</a>
+<h4>Start</h4>
+<a href="/docs/getting-started.html">Getting started</a>
+<h4>Concepts</h4>
+<a href="/docs/concepts.html">Concepts</a>
+<h4>Sync</h4>
+<a href="/docs/sync.html">Sync</a>
+<a href="/docs/devices.html">Devices</a>
+<h4>Reference</h4>
+<a href="/docs/mcp.html">MCP</a>
+<a href="/docs/import.html">Import</a>
+<a href="/docs/cli.html" aria-current="page">CLI</a>
+</nav>
+<article class="doc">
+<h1>CLI reference</h1>
+<p class="lede">Every command the <code>weft</code> binary exposes. This is the authoritative reference; where it disagrees with prose elsewhere, trust this page.</p>
+
+<h2>Commands at a glance</h2>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td><code>weft serve &lt;vault-path&gt;</code></td><td>Start the daemon and open the browser (http://localhost:7777)</td></tr>
+<tr><td><code>weft capture "&lt;text&gt;"</code></td><td>Quick-capture to today's daily note</td></tr>
+<tr><td><code>weft clip &lt;url&gt;</code></td><td>Clip a URL to the vault as <code>clips/YYYY-MM-DD-slug.html</code></td></tr>
+<tr><td><code>weft mcp &lt;vault-path&gt;</code></td><td>Run the MCP server on stdio (for Claude Code)</td></tr>
+<tr><td><code>weft import &lt;kind&gt; &lt;src&gt;</code></td><td>Import notes; kinds: <code>markdown</code> <code>notion</code> <code>bookmarks</code> <code>apple-notes</code></td></tr>
+<tr><td><code>weft sync init</code></td><td>Set up E2EE multi-device sync on your own cloud</td></tr>
+<tr><td><code>weft sync join</code></td><td>Enroll this device with the shared passphrase</td></tr>
+<tr><td><code>weft sync pair</code></td><td>Enroll this device from another one (no passphrase)</td></tr>
+<tr><td><code>weft sync pair-approve &lt;code&gt;</code></td><td>Approve a pairing request on an enrolled device</td></tr>
+<tr><td><code>weft sync recovery</code></td><td>Print this vault's 24-word recovery phrase</td></tr>
+<tr><td><code>weft sync recover --phrase "..."</code></td><td>Rebuild a vault from its recovery phrase</td></tr>
+<tr><td><code>weft sync check</code></td><td>Verify bucket creds + connectivity (no data touched)</td></tr>
+<tr><td><code>weft sync</code></td><td>Run one convergence cycle (push + pull)</td></tr>
+</table>
+
+<h2>serve</h2>
+<p>Start the daemon. It owns the vault, builds the index, and serves the web app at http://localhost:7777, opening your browser.</p>
+<pre><code><span class="tok-c"># start the daemon on a vault folder</span>
+<span class="tok-cmd">weft</span> serve ~/notes</code></pre>
+
+<h2>capture</h2>
+<p>Append text to today's daily note (<code>daily/YYYY-MM-DD.html</code>), creating it if needed. The fastest way to get a thought into the vault without leaving the terminal.</p>
+<pre><code><span class="tok-cmd">weft</span> capture "idea: surface co-accessed notes on hover"</code></pre>
+
+<h2>clip</h2>
+<p>Fetch a web page and save it to the vault as <code>clips/YYYY-MM-DD-slug.html</code>. Because the canonical format is already HTML, clipping is essentially a copy.</p>
+<pre><code><span class="tok-cmd">weft</span> clip https://example.com/some-article</code></pre>
+
+<h2>mcp</h2>
+<p>Run the MCP server over stdio so Claude Code can read, search, surface, and write notes in your vault.</p>
+<pre><code><span class="tok-cmd">weft</span> mcp ~/notes</code></pre>
+<p class="muted">See <a href="/docs/mcp.html">the MCP guide</a> for wiring it into Claude Code.</p>
+
+<h2>import</h2>
+<p>Bring existing notes into the vault. Pick a kind and point it at the source export.</p>
+<table>
+<tr><th>Kind</th><th>Source</th></tr>
+<tr><td><code>markdown</code></td><td>A folder of Markdown files</td></tr>
+<tr><td><code>notion</code></td><td>A Notion export</td></tr>
+<tr><td><code>bookmarks</code></td><td>A browser bookmarks HTML export</td></tr>
+<tr><td><code>apple-notes</code></td><td>Apple Notes</td></tr>
+</table>
+<table>
+<tr><th>Flag</th><th>Meaning</th></tr>
+<tr><td><code>--force</code></td><td>Overwrite existing notes</td></tr>
+<tr><td><code>-v &lt;vault&gt;</code></td><td>Target vault path</td></tr>
+</table>
+<pre><code><span class="tok-cmd">weft</span> import markdown ~/old-notes --force -v ~/notes</code></pre>
+<p class="muted">More detail in <a href="/docs/import.html">Import</a>.</p>
+
+<h2>sync</h2>
+<p>Multi-device sync is optional, bring-your-own-cloud, and end-to-end encrypted. Weft runs no server; your notes pass through object storage you own, and the bucket holds only ciphertext. Each command is below; the convergence cycle and shared flags follow.</p>
+
+<h3>sync init</h3>
+<p>Set up E2EE sync on the first device. Generates the vault key on your machine — it is never uploaded.</p>
+
+<h3>sync join</h3>
+<p>Enroll an additional device using the shared passphrase.</p>
+
+<h3>sync pair / pair-approve</h3>
+<p>Enroll a new device without retyping the passphrase. Run <code>weft sync pair</code> on the new device to print a code, then <code>weft sync pair-approve &lt;code&gt;</code> on an already-enrolled device. Both screens show an 8-digit code (SAS) you compare and confirm; the vault key is handed over end-to-end, resistant to a man-in-the-middle.</p>
+<pre><code><span class="tok-c"># on the new device</span>
+<span class="tok-cmd">weft</span> sync pair
+
+<span class="tok-c"># on an already-enrolled device</span>
+<span class="tok-cmd">weft</span> sync pair-approve 7Q3K-2F9P</code></pre>
+
+<h3>sync recovery / recover</h3>
+<p><code>weft sync recovery</code> prints this vault's 24-word recovery phrase. <code>weft sync recover</code> rebuilds a vault from it if you lose every device.</p>
+<pre><code><span class="tok-cmd">weft</span> sync recovery
+
+<span class="tok-cmd">weft</span> sync recover --phrase "word1 word2 ... word24"</code></pre>
+<div class="note"><strong>Phrase via environment or stdin.</strong> <code>weft sync recover</code> also reads the phrase from stdin or from the <code>WEFT_RECOVERY_PHRASE</code> environment variable, so you need not pass <code>--phrase</code> on the command line.</div>
+
+<h3>sync check</h3>
+<p>Validate bucket credentials and connectivity before touching any data. Run this first.</p>
+<pre><code><span class="tok-cmd">weft</span> sync check</code></pre>
+
+<h3>sync (convergence cycle)</h3>
+<p>Run one convergence cycle: push local changes, pull remote changes. A true concurrent edit becomes a conflict-copy — never a silent overwrite.</p>
+<pre><code><span class="tok-cmd">weft</span> sync</code></pre>
+
+<h3>sync flags</h3>
+<table>
+<tr><th>Flag</th><th>Meaning</th></tr>
+<tr><td><code>-v &lt;vault&gt;</code></td><td>Vault path</td></tr>
+<tr><td><code>--passphrase &lt;p&gt;</code></td><td>Vault passphrase</td></tr>
+<tr><td><code>--provider {r2|aws|minio|b2|fs}</code></td><td>Storage backend</td></tr>
+<tr><td><code>--bucket</code></td><td>Bucket name</td></tr>
+<tr><td><code>--endpoint</code></td><td>Endpoint URL</td></tr>
+<tr><td><code>--region</code></td><td>Region</td></tr>
+<tr><td><code>--access-key</code></td><td>Access key</td></tr>
+<tr><td><code>--secret</code></td><td>Secret key</td></tr>
+<tr><td><code>--path-style</code></td><td>Use path-style addressing</td></tr>
+<tr><td><code>--prefix</code></td><td>Key prefix in the bucket (default <code>weft/v1</code>)</td></tr>
+<tr><td><code>--fs-path</code></td><td>Local path for the <code>fs</code> provider</td></tr>
+</table>
+<p class="muted">Full setup walkthrough in <a href="/docs/sync.html">Sync</a> and <a href="/docs/devices.html">Devices</a>.</p>
+
+<h2>Keys, keychain, and environment</h2>
+<div class="note"><strong>The vault key is cached in the OS keychain after init/join/pair</strong> (macOS Keychain, Linux Secret Service, Windows Credential Manager), so the daemon and <code>weft sync</code> need no passphrase on that device. Set <code>WEFT_SECRET_STORE=file</code> to force the on-disk 0600 fallback for headless hosts.</div>
+<table>
+<tr><th>Variable</th><th>Effect</th></tr>
+<tr><td><code>WEFT_SECRET_STORE=file</code></td><td>Force the on-disk key store instead of the OS keychain (for headless hosts)</td></tr>
+<tr><td><code>WEFT_RECOVERY_PHRASE</code></td><td>Supply the 24-word phrase to <code>weft sync recover</code> without <code>--phrase</code></td></tr>
+</table>
+</article>
+</div></div></main>
+<footer class="site"><div class="wrap">
+  <span>Weft — your notes, woven.</span>
+  <span class="muted">local-first · end-to-end encrypted · no accounts</span>
+  <span class="sep"></span>
+  <a href="/docs/">Docs</a>
+  <a href="/install.html">Install</a>
+</div></footer>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button');
+  b.className = 'copy'; b.type = 'button'; b.textContent = 'copy';
+  b.addEventListener('click', function () {
+    var code = pre.querySelector('code');
+    navigator.clipboard.writeText((code || pre).innerText.replace(/\n+$/, '')).then(function () {
+      b.textContent = 'copied'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = 'copy'; b.classList.remove('ok'); }, 1200);
+    });
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

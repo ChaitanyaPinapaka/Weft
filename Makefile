@@ -33,7 +33,9 @@ release:
 		echo "  $$os/$$arch"; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o dist/weft-$$os-$$arch$$ext ./cmd/weft || exit 1; \
 	done
-	@echo "built dist/ for darwin, linux, windows"
+	@cd dist && { sha256sum weft-* 2>/dev/null || shasum -a 256 weft-*; } > SHA256SUMS
+	@echo "built dist/ for darwin, linux, windows (+ SHA256SUMS)"
+	@echo "publish: upload dist/* to your host under <version>/ and latest/ (see site/DEPLOY.md)"
 
 test:
 	go test ./...
