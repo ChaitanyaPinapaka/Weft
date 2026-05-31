@@ -5,3 +5,4 @@ dist/
 *.db-journal
 .DS_Store
 node_modules/
+.astro/
