@@ -200,17 +200,6 @@ th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--bor
 th { color: var(--muted); font-weight: 550; }
 td code { white-space: nowrap; }
 
-/* --- docs layout -------------------------------------------------------- */
-
-.docs { display: grid; grid-template-columns: 200px 1fr; gap: 48px; padding-top: 40px; align-items: start; }
-.docnav { position: sticky; top: 76px; font-size: 15px; }
-.docnav h4 { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 1.2em 0 0.5em; }
-.docnav a { display: block; color: var(--muted); padding: 3px 0; }
-.docnav a:hover { color: var(--text); text-decoration: none; }
-.docnav a[aria-current="page"] { color: var(--accent); }
-.doc h1 { font-size: 2rem; }
-.doc { min-width: 0; }
-
 /* --- misc --------------------------------------------------------------- */
 
 .eyebrow { color: var(--accent); font-size: 13px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 8px; }

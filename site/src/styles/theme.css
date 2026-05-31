@@ -1,0 +1,19 @@
+/* Map Starlight's palette to the Weft app: one blue accent, system fonts, mono. */
+:root {
+  --sl-color-accent-low: #1b2b4d;
+  --sl-color-accent: #2563eb;
+  --sl-color-accent-high: #b9ccfb;
+  --sl-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sl-font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+  --sl-color-accent-low: #c7d7fb;
+  --sl-color-accent: #2563eb;
+  --sl-color-accent-high: #18356e;
+}
+/* The weft motif: a faint woven thread under the page title. */
+.content-panel h1#_top {
+  border-bottom: 3px solid transparent;
+  border-image: repeating-linear-gradient(90deg, var(--sl-color-accent) 0 22px, transparent 22px 30px) 1;
+  padding-bottom: 0.3em;
+}
