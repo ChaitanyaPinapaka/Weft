@@ -69,6 +69,11 @@ func Run(vaultPath string) error {
 	// If sync is configured, converge through the E2EE bucket in the background.
 	startAutoSync(v, ix, emb)
 
+	// Proactive surfacing: push "what's worth resurfacing now" to connected
+	// surfaces (the macOS app) over SSE. No-op until a client subscribes.
+	hub := newAmbientHub()
+	startAmbientSurfacer(hub, v, ix, ps)
+
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
 	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
@@ -81,6 +86,9 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /daily", dailyRedirectHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
+	// More specific than the {path...} wildcard below, so ServeMux routes the
+	// literal "stream" here instead of treating it as a note path.
+	mux.HandleFunc("GET /api/surface/stream", surfaceStreamHandler(hub))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
@@ -523,138 +531,170 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 // Also returns the explicit backlinks list, the on_this_day anniversary array,
 // and the session "trail" (focus → earlier sources) for the thought-trail UI.
 func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, ps *paramStore) http.HandlerFunc {
+	// emb is unused: surfacing reads the embeddings stored in the index, not the
+	// live embedder. Kept in the signature for call-site/test symmetry with the
+	// other handlers and so a future per-request embed has a home.
+	_ = emb
 	return func(w http.ResponseWriter, r *http.Request) {
-		cur := r.PathValue("path")
-		if !strings.HasSuffix(cur, ".html") {
-			cur += ".html"
-		}
-
-		notes, err := v.List()
+		res, err := computeSurface(v, ix, ps.get(), r.PathValue("path"), time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		now := time.Now()
-		nowUnix := now.Unix()
-		p := ps.get()
-
-		// (a) Reconstruct the current session by gap-walking recent accesses.
-		// The focus is the source at full attention; earlier in-session notes
-		// spread with decaying attention. /note/{path} already logs every open.
-		since := nowUnix - int64(p.SessionLookback.Seconds())
-		recent, _ := ix.RecentAccesses(since) // DESC by ts
-		lastTouch := map[string]int64{cur: nowUnix}
-		sourcePaths := []string{cur}
-		prevTs := nowUnix
-		for _, a := range recent {
-			if prevTs-a.Ts > int64(p.SessionGap.Seconds()) {
-				break // crossed a session boundary
-			}
-			prevTs = a.Ts
-			if a.Path == cur {
-				continue
-			}
-			if _, seen := lastTouch[a.Path]; !seen {
-				lastTouch[a.Path] = a.Ts // DESC ⇒ first sighting is most-recent touch
-				sourcePaths = append(sourcePaths, a.Path)
-			}
-		}
-
-		// (b) Attention weights: focus pinned, earlier sources decayed+normalized.
-		raw := make([]surface.Source, len(sourcePaths))
-		for i, sp := range sourcePaths {
-			raw[i] = surface.Source{Path: sp}
-		}
-		sources := surface.AttentionWeights(raw, nowUnix, lastTouch, cur, p)
-
-		// (c) Per-source association inputs. Embeddings decoded once.
-		vecs := map[string][]float32{}
-		if all, err := ix.AllEmbeddings(); err == nil {
-			for pth, blob := range all {
-				if vc, e := embed.Decode(blob); e == nil {
-					vecs[pth] = vc
-				}
-			}
-		}
-		linkSets := map[string]map[string]bool{}
-		coCounts := map[string]map[string]int{}
-		for _, src := range sources {
-			ls := map[string]bool{}
-			if b, e := ix.BacklinksTo(src.Path); e == nil {
-				for _, x := range b {
-					ls[x] = true
-				}
-			}
-			if f, e := ix.LinksFrom(src.Path); e == nil {
-				for _, x := range f {
-					ls[x] = true
-				}
-			}
-			linkSets[src.Path] = ls
-			cc, _ := ix.CoAccessCount(src.Path, p.SessionGap)
-			coCounts[src.Path] = cc
-		}
-
-		// (d) Access history for base-level, in one scan.
-		hist, _ := ix.AllAccessHistory()
-
-		// (e) Build candidates with per-source edges. Skip the self-source edge
-		// (a note that is also a session source has cosine 1.0 to itself and
-		// would fabricate a semantic boost). Path-sort for deterministic noise.
-		cands := make([]surface.Candidate, 0, len(notes))
-		for _, n := range notes {
-			edges := map[string]surface.EdgeSet{}
-			for _, src := range sources {
-				if src.Path == n.Path {
-					continue
-				}
-				sim := 0.0
-				if sv, cv := vecs[src.Path], vecs[n.Path]; sv != nil && cv != nil {
-					sim = float64(embed.CosineSimilarity(sv, cv))
-				}
-				edges[src.Path] = surface.EdgeSet{
-					Backlink:      linkSets[src.Path][n.Path],
-					Similarity:    sim,
-					CoAccessCount: coCounts[src.Path][n.Path],
-				}
-			}
-			cands = append(cands, surface.Candidate{
-				Path:     n.Path,
-				Title:    n.Name,
-				ModTime:  n.ModTime,
-				Accesses: hist[n.Path],
-				Edges:    edges,
-			})
-		}
-		sort.Slice(cands, func(i, j int) bool { return cands[i].Path < cands[j].Path })
-
-		// (f) Rank by activation.
-		noiser := surface.NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian)
-		scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser)
-		if len(scored) > p.TopN {
-			scored = scored[:p.TopN]
-		}
-
-		// (g) Explicit backlinks list + on_this_day, both unchanged in shape.
-		back, _ := ix.BacklinksTo(cur)
-		otd := surface.OnThisDay(cands, now, p)
-		filtered := otd[:0]
-		for _, c := range otd {
-			if c.Path != cur {
-				filtered = append(filtered, c)
-			}
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"current":     cur,
-			"backlinks":   back,
-			"scored":      scored,
-			"on_this_day": filtered,
-			"trail":       sourcePaths, // focus first, then earlier-session sources
+			"current":     res.Current,
+			"backlinks":   res.Backlinks,
+			"scored":      res.Scored,
+			"on_this_day": res.OnThisDay,
+			"trail":       res.Trail, // focus first, then earlier-session sources
 		})
 	}
+}
+
+// surfaceResult is the computed brain-panel payload: the ACT-R activation
+// ranking plus the explicit backlinks, the on-this-day anniversaries, and the
+// session trail. Produced by computeSurface and consumed by both surfaceHandler
+// (HTTP) and the ambient surfacer (SSE push).
+type surfaceResult struct {
+	Current   string
+	Backlinks []string
+	Scored    []surface.Scored
+	OnThisDay []surface.Candidate
+	Trail     []string // focus first, then earlier-session sources
+}
+
+// computeSurface runs the surfacing engine for one focus note: it reconstructs
+// the current session from the access log, weights attention across the
+// sources, builds per-candidate association edges (backlink/semantic/co-access),
+// and ranks every note by ACT-R activation. `cur` is the focus path (a trailing
+// .html is appended if missing); `now` anchors recency and the noise seed.
+func computeSurface(v *vault.Vault, ix *index.Index, p surface.Params, cur string, now time.Time) (surfaceResult, error) {
+	if !strings.HasSuffix(cur, ".html") {
+		cur += ".html"
+	}
+
+	notes, err := v.List()
+	if err != nil {
+		return surfaceResult{}, err
+	}
+
+	nowUnix := now.Unix()
+
+	// (a) Reconstruct the current session by gap-walking recent accesses.
+	// The focus is the source at full attention; earlier in-session notes
+	// spread with decaying attention. /note/{path} already logs every open.
+	since := nowUnix - int64(p.SessionLookback.Seconds())
+	recent, _ := ix.RecentAccesses(since) // DESC by ts
+	lastTouch := map[string]int64{cur: nowUnix}
+	sourcePaths := []string{cur}
+	prevTs := nowUnix
+	for _, a := range recent {
+		if prevTs-a.Ts > int64(p.SessionGap.Seconds()) {
+			break // crossed a session boundary
+		}
+		prevTs = a.Ts
+		if a.Path == cur {
+			continue
+		}
+		if _, seen := lastTouch[a.Path]; !seen {
+			lastTouch[a.Path] = a.Ts // DESC ⇒ first sighting is most-recent touch
+			sourcePaths = append(sourcePaths, a.Path)
+		}
+	}
+
+	// (b) Attention weights: focus pinned, earlier sources decayed+normalized.
+	raw := make([]surface.Source, len(sourcePaths))
+	for i, sp := range sourcePaths {
+		raw[i] = surface.Source{Path: sp}
+	}
+	sources := surface.AttentionWeights(raw, nowUnix, lastTouch, cur, p)
+
+	// (c) Per-source association inputs. Embeddings decoded once.
+	vecs := map[string][]float32{}
+	if all, err := ix.AllEmbeddings(); err == nil {
+		for pth, blob := range all {
+			if vc, e := embed.Decode(blob); e == nil {
+				vecs[pth] = vc
+			}
+		}
+	}
+	linkSets := map[string]map[string]bool{}
+	coCounts := map[string]map[string]int{}
+	for _, src := range sources {
+		ls := map[string]bool{}
+		if b, e := ix.BacklinksTo(src.Path); e == nil {
+			for _, x := range b {
+				ls[x] = true
+			}
+		}
+		if f, e := ix.LinksFrom(src.Path); e == nil {
+			for _, x := range f {
+				ls[x] = true
+			}
+		}
+		linkSets[src.Path] = ls
+		cc, _ := ix.CoAccessCount(src.Path, p.SessionGap)
+		coCounts[src.Path] = cc
+	}
+
+	// (d) Access history for base-level, in one scan.
+	hist, _ := ix.AllAccessHistory()
+
+	// (e) Build candidates with per-source edges. Skip the self-source edge
+	// (a note that is also a session source has cosine 1.0 to itself and
+	// would fabricate a semantic boost). Path-sort for deterministic noise.
+	cands := make([]surface.Candidate, 0, len(notes))
+	for _, n := range notes {
+		edges := map[string]surface.EdgeSet{}
+		for _, src := range sources {
+			if src.Path == n.Path {
+				continue
+			}
+			sim := 0.0
+			if sv, cv := vecs[src.Path], vecs[n.Path]; sv != nil && cv != nil {
+				sim = float64(embed.CosineSimilarity(sv, cv))
+			}
+			edges[src.Path] = surface.EdgeSet{
+				Backlink:      linkSets[src.Path][n.Path],
+				Similarity:    sim,
+				CoAccessCount: coCounts[src.Path][n.Path],
+			}
+		}
+		cands = append(cands, surface.Candidate{
+			Path:     n.Path,
+			Title:    n.Name,
+			ModTime:  n.ModTime,
+			Accesses: hist[n.Path],
+			Edges:    edges,
+		})
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].Path < cands[j].Path })
+
+	// (f) Rank by activation.
+	noiser := surface.NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian)
+	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser)
+	if len(scored) > p.TopN {
+		scored = scored[:p.TopN]
+	}
+
+	// (g) Explicit backlinks list + on_this_day, both unchanged in shape.
+	back, _ := ix.BacklinksTo(cur)
+	otd := surface.OnThisDay(cands, now, p)
+	filtered := otd[:0]
+	for _, c := range otd {
+		if c.Path != cur {
+			filtered = append(filtered, c)
+		}
+	}
+
+	return surfaceResult{
+		Current:   cur,
+		Backlinks: back,
+		Scored:    scored,
+		OnThisDay: filtered,
+		Trail:     sourcePaths,
+	}, nil
 }
 
 func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
