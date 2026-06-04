@@ -1,0 +1,35 @@
+# XcodeGen spec for the Weft iOS app. Regenerate the .xcodeproj with `xcodegen`
+# (run from ios/). The app embeds two local dependencies:
+#   - WeftKit       : the shared SwiftUI data/theme/reader layer (also used by macOS)
+#   - WeftMobile    : the gomobile xcframework embedding the Go engine (`make ios`)
+# so the phone is a full offline E2EE sync peer — no daemon.
+name: Weft
+options:
+  bundleIdPrefix: app.tryweft
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  WeftKit:
+    path: ../WeftKit
+targets:
+  Weft:
+    type: application
+    platform: iOS
+    sources:
+      - path: Weft
+    dependencies:
+      - package: WeftKit
+      - framework: Frameworks/WeftMobile.xcframework
+        embed: true
+        codeSign: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tryweft.ios
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"

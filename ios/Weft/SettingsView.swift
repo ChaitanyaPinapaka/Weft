@@ -1,0 +1,146 @@
+import SwiftUI
+import WeftKit
+
+// Bucket credentials + enrollment. Shown as onboarding when the device isn't yet
+// enrolled, and as a settings sheet afterward. Two enrollment paths, both backed
+// by the existing Go flow: a 24-word recovery phrase, or SAS "add device"
+// pairing (the Mac approves with `weft sync pair-approve <reqID>`).
+struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var creds = BucketCreds()
+    @State private var phrase = ""
+    @State private var mode: Mode = .phrase
+    @State private var working = false
+    @State private var error: String?
+
+    // Pairing progress.
+    @State private var reqID: String?
+    @State private var sas: String?
+
+    enum Mode: Hashable { case phrase, pair }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if model.enrolled {
+                    Section {
+                        Label("This device is enrolled", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(Weft.accent)
+                    }
+                }
+
+                Section("Bucket") {
+                    Picker("Provider", selection: $creds.provider) {
+                        Text("Cloudflare R2").tag("r2")
+                        Text("Google Cloud Storage").tag("gcs")
+                        Text("AWS S3").tag("aws")
+                    }
+                    plainField("Endpoint", $creds.endpoint)
+                    plainField("Bucket", $creds.bucket)
+                    plainField("Access Key ID", $creds.accessKeyID)
+                    SecureField("Secret Access Key", text: $creds.secret)
+                }
+
+                Section("Enroll this device") {
+                    Picker("Method", selection: $mode) {
+                        Text("Recovery phrase").tag(Mode.phrase)
+                        Text("Add device").tag(Mode.pair)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if mode == .phrase {
+                        TextField("24-word recovery phrase", text: $phrase, axis: .vertical)
+                            .lineLimit(3...6)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button("Enroll with phrase", action: enrollPhrase)
+                            .disabled(working || phrase.isEmpty)
+                    } else {
+                        pairingSection
+                    }
+                }
+
+                if let error {
+                    Section { Text(error).foregroundStyle(Weft.danger) }
+                }
+            }
+            .navigationTitle("Weft")
+            .toolbar {
+                if model.enrolled {
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var pairingSection: some View {
+        if let reqID {
+            LabeledContent("Code for the Mac", value: reqID)
+            Text("On your Mac, run:\nweft sync pair-approve \(reqID)")
+                .font(.footnote).monospaced().foregroundStyle(Weft.muted)
+        }
+        if let sas {
+            LabeledContent {
+                Text(sas).font(.title3.monospaced().bold()).foregroundStyle(Weft.accent)
+            } label: {
+                Text("Confirm this matches the Mac")
+            }
+            Button("Codes match — finish", action: finishPair).disabled(working)
+        } else if reqID != nil {
+            HStack { ProgressView(); Text("waiting for the Mac…").foregroundStyle(Weft.muted) }
+        } else {
+            Button("Pair with my Mac", action: startPair).disabled(working)
+        }
+    }
+
+    private func plainField(_ title: String, _ text: Binding<String>) -> some View {
+        TextField(title, text: text)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+    }
+
+    // MARK: - Actions
+
+    private func enrollPhrase() {
+        working = true; error = nil
+        Task {
+            do { try await model.enrollWithPhrase(creds: creds, phrase: phrase); dismissIfPresented() }
+            catch { self.error = error.localizedDescription }
+            working = false
+        }
+    }
+
+    private func startPair() {
+        working = true; error = nil
+        Task {
+            do {
+                reqID = try await model.pairStart(creds: creds)
+                for _ in 0..<90 where sas == nil {       // ~3 min at 2s
+                    try await Task.sleep(for: .seconds(2))
+                    let code = try await model.pairPoll()
+                    if !code.isEmpty { sas = code }
+                }
+            } catch { self.error = error.localizedDescription }
+            working = false
+        }
+    }
+
+    private func finishPair() {
+        working = true; error = nil
+        Task {
+            do {
+                for _ in 0..<90 {
+                    if try await model.pairFinish() { dismissIfPresented(); break }
+                    try await Task.sleep(for: .seconds(2))
+                }
+            } catch { self.error = error.localizedDescription }
+            working = false
+        }
+    }
+
+    private func dismissIfPresented() {
+        if model.enrolled { dismiss() } // onboarding flips RootView automatically
+    }
+}
