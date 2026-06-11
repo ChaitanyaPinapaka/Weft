@@ -8,7 +8,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "notifications"
+    "notifications",
+    "contextMenus"
   ],
 
   "host_permissions": [
@@ -22,30 +23,30 @@
   "action": {
     "default_title": "Clip page to Weft",
     "default_icon": {
-      "16": "icons/icon.png",
-      "48": "icons/icon.png",
-      "128": "icons/icon.png"
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
     }
   },
 
   "icons": {
-    "16": "icons/icon.png",
-    "48": "icons/icon.png",
-    "128": "icons/icon.png"
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   },
 
   "commands": {
     "quick-capture": {
       "suggested_key": {
-        "default": "Ctrl+Shift+W",
-        "mac": "Command+Shift+W"
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
       },
       "description": "Open Weft quick-capture overlay"
     },
     "toggle-sidebar": {
       "suggested_key": {
-        "default": "Ctrl+Shift+B",
-        "mac": "Command+Shift+B"
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
       },
       "description": "Toggle the Weft brain-panel sidebar"
     },

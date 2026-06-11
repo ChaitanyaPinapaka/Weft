@@ -12,6 +12,10 @@
   if (window.__weftInjected) return;
   window.__weftInjected = true;
 
+  // After an extension reload, the previous content script's isolated world is
+  // gone but its host element survives in the DOM as a dead husk. Replace it.
+  document.getElementById("weft-host")?.remove();
+
   const host = document.createElement("div");
   host.id = "weft-host";
   // The host element itself is the only thing the page sees; nothing inside leaks.
