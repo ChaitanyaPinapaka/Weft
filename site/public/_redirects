@@ -1,0 +1,3 @@
+# Binaries live on R2 at dl.tryweft.app; keep the friendly tryweft.app/dl/* base
+# so `curl -fsSL https://tryweft.app/install.sh | sh` works with no env var.
+/dl/*  https://dl.tryweft.app/:splat  302
