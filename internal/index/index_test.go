@@ -383,6 +383,66 @@ func TestDeleteRemovesTags(t *testing.T) {
 	}
 }
 
+// TestRemove verifies the trash-path cleanup: every per-note table loses its
+// x.html rows — including backlinks in BOTH directions (unlike Delete, whose
+// incoming rows the rename flow rewrites afterwards) — while the append-only
+// access_log keeps its behavioral history.
+func TestRemove(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	xHTML := `<a href="y.html">y</a> remove me #gone`
+	yHTML := `<a href="x.html">x</a> survives`
+	if err := ix.Upsert(Note{Path: "x.html", Title: "X", Body: xHTML, Links: ParseLinks([]byte(xHTML)), ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Upsert(Note{Path: "y.html", Title: "Y", Body: yHTML, Links: ParseLinks([]byte(yHTML)), ModTime: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.UpsertEmbedding("x.html", []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.LogAccess("x.html", now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ix.Remove("x.html"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM notes WHERE path = 'x.html'`,
+		`SELECT COUNT(*) FROM notes_fts WHERE path = 'x.html'`,
+		`SELECT COUNT(*) FROM backlinks WHERE src = 'x.html'`,
+		`SELECT COUNT(*) FROM backlinks WHERE dst = 'x.html'`,
+		`SELECT COUNT(*) FROM embeddings WHERE path = 'x.html'`,
+		`SELECT COUNT(*) FROM tags WHERE path = 'x.html'`,
+	} {
+		var n int
+		if err := ix.db.QueryRow(q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if n != 0 {
+			t.Errorf("%s = %d, want 0", q, n)
+		}
+	}
+
+	var logs int
+	if err := ix.db.QueryRow(`SELECT COUNT(*) FROM access_log WHERE path = 'x.html'`).Scan(&logs); err != nil {
+		t.Fatal(err)
+	}
+	if logs != 1 {
+		t.Fatalf("access_log rows = %d, want 1 (history is kept)", logs)
+	}
+
+	var yCount int
+	if err := ix.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE path = 'y.html'`).Scan(&yCount); err != nil {
+		t.Fatal(err)
+	}
+	if yCount != 1 {
+		t.Fatal("y.html must survive x.html's removal")
+	}
+}
+
 func TestDelete(t *testing.T) {
 	ix := newIndex(t)
 	now := time.Now()

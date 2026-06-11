@@ -209,6 +209,33 @@ func (ix *Index) Delete(path string) error {
 	return tx.Commit()
 }
 
+// Remove erases every row a note occupies: notes, FTS, backlinks in BOTH
+// directions, embeddings, tags. Used when a note is trashed. It differs from
+// Delete (the rename path) by also dropping incoming backlink rows — nothing
+// will re-point them at a trashed note. access_log is deliberately untouched:
+// it is append-only behavioral history, not note content, and old accesses
+// still inform co-access scoring for the notes that remain.
+func (ix *Index) Remove(path string) error {
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM notes WHERE path = ?`,
+		`DELETE FROM notes_fts WHERE path = ?`,
+		`DELETE FROM backlinks WHERE src = ?`,
+		`DELETE FROM backlinks WHERE dst = ?`,
+		`DELETE FROM embeddings WHERE path = ?`,
+		`DELETE FROM tags WHERE path = ?`,
+	} {
+		if _, err := tx.Exec(q, path); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (ix *Index) Search(query string, limit int) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 20
@@ -237,6 +264,26 @@ func (ix *Index) Search(query string, limit int) ([]Hit, error) {
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
+}
+
+// Paths returns every note path currently in the index. The reindex diffs
+// this against the vault to prune rows for files that no longer exist on disk
+// (e.g. a trash or rename whose own index cleanup failed).
+func (ix *Index) Paths() ([]string, error) {
+	rows, err := ix.db.Query(`SELECT path FROM notes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (ix *Index) BacklinksTo(path string) ([]string, error) {

@@ -56,6 +56,18 @@ header .edit-link {
   flex-shrink: 0;
 }
 header .edit-link:hover { text-decoration: underline; }
+/* Remove only moves the note to .trash (never deletes), so the affordance
+   stays quiet: muted until hovered, then the warning red used by .status. */
+header .remove-link {
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .remove-link:hover { color: #c0392b; text-decoration: underline; }
+@media (prefers-color-scheme: dark) {
+  header .remove-link:hover { color: #ff7a6e; }
+}
 /* Small, muted "notes" link — home (/) now lands on today's daily; the vault
    list moved to /notes. Quieter than the accent-coloured edit link. */
 header .notes-link {

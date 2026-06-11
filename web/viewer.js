@@ -56,6 +56,26 @@
     editLinkEl.hidden = false;
   }
 
+  // Remove is a soft delete: the daemon moves the file to .trash/ in the vault
+  // (never hard-deleted) and drops it from the index, then we bounce back to
+  // the vault list since this note no longer has a live page.
+  const removeLinkEl = document.getElementById('remove-link');
+  if (path && removeLinkEl) {
+    removeLinkEl.hidden = false;
+    removeLinkEl.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const ok = confirm('Remove "' + path + '"?\n\nThe file moves to .trash/ in your vault — nothing is deleted — but it leaves listings, search, and surfacing.');
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/note/' + path, { method: 'DELETE' });
+        if (!res.ok) throw new Error('http ' + res.status);
+        location.href = '/notes';
+      } catch (err) {
+        setStatus('offline', 'remove failed');
+      }
+    });
+  }
+
   function setStatus(state, text) {
     statusEl.className = 'status ' + state;
     statusEl.textContent = text;

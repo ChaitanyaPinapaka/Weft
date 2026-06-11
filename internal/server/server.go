@@ -91,6 +91,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/surface/stream", surfaceStreamHandler(hub))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
+	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
@@ -120,12 +121,24 @@ func Run(vaultPath string) error {
 
 // withCORS makes /api/* reachable from the browser extension (origins like
 // `chrome-extension://…` and `moz-extension://…`) and from any local web
-// surface. The daemon is bound to localhost so wide-open CORS is fine here.
+// surface. The daemon is bound to localhost, so reads stay wide open (`*`) —
+// but mutating verbs are only CORS-approved for allowlisted origins: browsers
+// preflight DELETE, so approving every origin would let any web page trash
+// the vault cross-origin.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			method := r.Method
+			if method == http.MethodOptions {
+				// Preflight: judge the method the browser intends to send.
+				method = r.Header.Get("Access-Control-Request-Method")
+			}
+			if method == http.MethodGet || method == http.MethodHead {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin := r.Header.Get("Origin"); mutatingOriginAllowed(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -134,6 +147,16 @@ func withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// mutatingOriginAllowed reports whether a browser origin may make mutating
+// (POST/DELETE) /api/ calls: the browser-extension surfaces plus the daemon's
+// own pages, nothing else. Non-browser clients (CLI, native apps) send no
+// Origin header and are untouched by CORS anyway.
+func mutatingOriginAllowed(origin string) bool {
+	return strings.HasPrefix(origin, "chrome-extension://") ||
+		strings.HasPrefix(origin, "moz-extension://") ||
+		origin == "http://"+addr
 }
 
 func listHandler(v *vault.Vault) http.HandlerFunc {
@@ -495,6 +518,43 @@ func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Han
 	}
 }
 
+// trashHandler is DELETE /api/note/{path}: the user-initiated "remove". The
+// file moves into .trash/ (vault.Trash — bytes are never deleted, per the
+// never-delete invariant) and its rows leave the index, so the note stops
+// listing, searching, and surfacing. Human-only by design: the MCP surface
+// exposes no delete tool.
+func trashHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		// Mirror osRemove's guard so a traversal attempt gets a 400 here
+		// rather than vault.Trash's opaque permission error.
+		if strings.Contains(rel, "..") {
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+		if !v.Exists(rel) {
+			http.Error(w, "note not found", http.StatusNotFound)
+			return
+		}
+		if err := v.Trash(rel); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// The vault is authoritative: the file is already in .trash, so a
+		// failed index cleanup doesn't fail the request — but it is logged,
+		// and indexAll's orphan sweep prunes the rows on the next reindex
+		// (startup or post-sync).
+		if err := ix.Remove(rel); err != nil {
+			fmt.Printf("trash: index remove %s: %v (prunes on next reindex)\n", rel, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"trashed": rel})
+	}
+}
+
 func apiNotesHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		notes, err := v.List()
@@ -777,7 +837,10 @@ func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Hand
 
 // indexAll incrementally re-indexes the vault on startup. Skips notes whose
 // stored mtime is already up to date (cheap PRAGMA-style mtime check); only
-// re-reads, re-parses, and re-embeds the stale ones.
+// re-reads, re-parses, and re-embeds the stale ones. It also sweeps index
+// rows whose file has left the vault (trashed, renamed, removed externally) —
+// the heal that makes trashHandler's and renameHandler's best-effort index
+// cleanup safe instead of leaving permanent search/surfacing ghosts.
 func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 	notes, err := v.List()
 	if err != nil {
@@ -815,6 +878,25 @@ func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 			return err
 		}
 		updateEmbedding(ix, emb, n.Path, title+"\n"+body)
+	}
+
+	// Orphan sweep: the loop above only ever upserts, so without this a note
+	// pulled from disk (e.g. a trash whose ix.Remove failed) would keep its
+	// rows — and keep appearing in search, tags, and surfacing — forever.
+	live := make(map[string]bool, len(notes))
+	for _, n := range notes {
+		live[n.Path] = true
+	}
+	indexed, err := ix.Paths()
+	if err != nil {
+		return err
+	}
+	for _, p := range indexed {
+		if !live[p] {
+			if err := ix.Remove(p); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

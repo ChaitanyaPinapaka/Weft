@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -195,6 +197,131 @@ func TestSurfaceHandlerSelfSourceNoBoost(t *testing.T) {
 			if r == "semantic" {
 				t.Fatalf("earlier.html must not get a self-edge semantic boost, reasons=%v", sc.Reasons)
 			}
+		}
+	}
+}
+
+// TestTrashHandler exercises DELETE /api/note/{path}: the note's file moves to
+// .trash/ (never hard-deleted), its index rows go away (both backlink
+// directions), and the handler 404s on missing notes and 400s on traversal.
+func TestTrashHandler(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	h := trashHandler(v, ix)
+
+	call := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodDelete, "/api/note/"+path, nil)
+		req.SetPathValue("path", path)
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+
+	// Suffix-less path mirrors noteHandler/saveHandler: ".html" is appended.
+	rr := call("focus")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["trashed"] != "focus.html" {
+		t.Fatalf(`want {"trashed":"focus.html"}, got %v`, resp)
+	}
+	if v.Exists("focus.html") {
+		t.Fatal("focus.html should be gone from the live vault")
+	}
+	if _, err := os.Stat(filepath.Join(v.Root, ".trash", "focus.html")); err != nil {
+		t.Fatalf("bytes must survive in .trash: %v", err)
+	}
+	// linker.html -> focus.html backlink rows must be gone (incoming direction).
+	if back, _ := ix.BacklinksTo("focus.html"); len(back) != 0 {
+		t.Fatalf("backlinks to trashed note should be cleared, got %v", back)
+	}
+
+	if rr := call("ghost.html"); rr.Code != http.StatusNotFound {
+		t.Fatalf("missing note: want 404, got %d", rr.Code)
+	}
+	if rr := call("../evil.html"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("traversal: want 400, got %d", rr.Code)
+	}
+}
+
+// TestIndexAllPrunesGhostRows: the reindex must sweep index rows whose file is
+// gone from the vault — the heal trashHandler's best-effort ix.Remove leans
+// on. A ghost row (left behind when a trash's index cleanup failed) must stop
+// appearing in search and backlinks after the next indexAll.
+func TestIndexAllPrunesGhostRows(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	ghost := `<p>ghost body links to <a href="focus.html">focus</a></p>`
+	if err := ix.Upsert(index.Note{
+		Path: "ghost.html", Title: "Ghost", Body: ghost,
+		Links: index.ParseLinks([]byte(ghost)), ModTime: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := indexAll(v, ix, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := ix.Search("ghost", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Path == "ghost.html" {
+			t.Fatalf("ghost.html should be pruned from search, got %+v", hits)
+		}
+	}
+	back, err := ix.BacklinksTo("focus.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 1 || back[0] != "linker.html" {
+		t.Fatalf("after the sweep only the live backlink should remain, got %v", back)
+	}
+	// Live notes must survive the sweep.
+	if hits, _ := ix.Search("focus", 10); len(hits) == 0 {
+		t.Fatal("live notes must survive the orphan sweep")
+	}
+}
+
+// TestWithCORSMutatingAllowlist locks the cross-origin posture: reads stay
+// wide open (`*`), but DELETE/POST — and their preflights — only get an
+// Access-Control-Allow-Origin echo for extension origins and the daemon's own
+// pages. A random web page's DELETE preflight gets no ACAO, so the browser
+// blocks a cross-origin vault trashing.
+func TestWithCORSMutatingAllowlist(t *testing.T) {
+	h := withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	acao := func(method, origin, reqMethod string) string {
+		req := httptest.NewRequest(method, "http://"+addr+"/api/note/x.html", nil)
+		req.Header.Set("Origin", origin)
+		if reqMethod != "" {
+			req.Header.Set("Access-Control-Request-Method", reqMethod)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Header().Get("Access-Control-Allow-Origin")
+	}
+
+	if got := acao(http.MethodGet, "https://evil.example", ""); got != "*" {
+		t.Fatalf("cross-origin reads should stay wide open, got ACAO %q", got)
+	}
+	if got := acao(http.MethodOptions, "https://evil.example", http.MethodDelete); got != "" {
+		t.Fatalf("a web page's DELETE preflight must not be approved, got ACAO %q", got)
+	}
+	if got := acao(http.MethodDelete, "https://evil.example", ""); got != "" {
+		t.Fatalf("a web page's DELETE must get no ACAO, got %q", got)
+	}
+	for _, origin := range []string{
+		"chrome-extension://abcdefgh",
+		"moz-extension://0123-4567",
+		"http://" + addr,
+	} {
+		if got := acao(http.MethodOptions, origin, http.MethodDelete); got != origin {
+			t.Fatalf("%s DELETE preflight should echo the origin, got ACAO %q", origin, got)
 		}
 	}
 }

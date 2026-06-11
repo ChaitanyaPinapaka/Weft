@@ -148,6 +148,11 @@ func (v *Vault) Exists(rel string) bool {
 // excluded from List, so trashed notes don't surface, index, or re-sync, but the
 // bytes remain recoverable on disk.
 func (v *Vault) Trash(rel string) error {
+	// Same guard as Write: abs() would silently re-root a ".." path inside the
+	// vault, which could relocate the wrong note. Fail loudly instead.
+	if strings.Contains(rel, "..") {
+		return os.ErrPermission
+	}
 	src := v.abs(rel)
 	if _, err := os.Stat(src); err != nil {
 		return nil // already gone
