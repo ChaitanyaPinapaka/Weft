@@ -104,6 +104,58 @@ public struct Candidate: Codable, Identifiable, Hashable {
     }
 }
 
+// One FTS5 search hit — the GET /api/search shape ([]index.Hit, PascalCase, no
+// json tags). The iOS gomobile SearchNotes facade returns the identical JSON, so
+// this decodes both transports unchanged.
+public struct SearchHit: Codable, Identifiable, Hashable {
+    public let path: String
+    public let title: String
+    public let snippet: String
+    public let score: Double
+
+    public var id: String { path }
+
+    enum CodingKeys: String, CodingKey {
+        case path = "Path", title = "Title", snippet = "Snippet", score = "Score"
+    }
+
+    public var displayTitle: String {
+        title.isEmpty
+            ? (path as NSString).lastPathComponent.replacingOccurrences(of: ".html", with: "")
+            : title
+    }
+
+    /// The FTS5 snippet with its `<mark>` markers rendered as emphasized runs
+    /// (Foundation-only intent, so SwiftUI Text and AppKit both bold it).
+    public var attributedSnippet: AttributedString {
+        var out = AttributedString()
+        var rest = Substring(snippet)
+        while let open = rest.range(of: "<mark>") {
+            out += AttributedString(String(rest[..<open.lowerBound]))
+            rest = rest[open.upperBound...]
+            let close = rest.range(of: "</mark>") ?? rest.endIndex..<rest.endIndex
+            var marked = AttributedString(String(rest[..<close.lowerBound]))
+            marked.inlinePresentationIntent = .stronglyEmphasized
+            out += marked
+            rest = rest[close.upperBound...]
+        }
+        out += AttributedString(String(rest))
+        return out
+    }
+}
+
+// The sync engine's convergence Result (engine JSON, PascalCase, no json tags):
+// {"Pushed":N,"Applied":N,"ConflictCopies":[...],"Rejected":N,"Unverifiable":N}.
+// Only the counts the status line shows are modeled; unknown keys are ignored.
+public struct SyncResult: Codable, Hashable {
+    public let pushed: Int
+    public let applied: Int
+
+    enum CodingKeys: String, CodingKey {
+        case pushed = "Pushed", applied = "Applied"
+    }
+}
+
 // One Server-Sent / pushed surface event. type == "hello" on connect, "surface"
 // otherwise. On iOS these are produced locally rather than over SSE, but the
 // shape is identical so the inbox/toast UI is shared.

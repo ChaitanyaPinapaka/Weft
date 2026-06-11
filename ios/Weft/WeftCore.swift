@@ -101,6 +101,23 @@ final class WeftCore: WeftBackend, @unchecked Sendable {
         try await run { self.session.daily($0) }
     }
 
+    /// FTS5 search over the local index. The engine marshals []index.Hit
+    /// directly, so an empty result set arrives as JSON `null` (the daemon's
+    /// encoder does the same for a nil slice) — coalesce that to [].
+    func search(_ query: String) async throws -> [SearchHit] {
+        let json = try await run { self.session.searchNotes(query, error: $0) }
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "null" { return [] }
+        return try decode([SearchHit].self, from: json)
+    }
+
+    /// Soft delete: the engine moves the note into .trash/ in the vault (bytes
+    /// are never deleted) and drops it from the index. Returns {"trashed":path},
+    /// which the UI doesn't need.
+    func trash(path: String) async throws {
+        _ = try await run { self.session.trash(path, error: $0) }
+    }
+
     // MARK: - Plumbing
 
     private func decode<T: Decodable>(_ type: T.Type, from json: String) throws -> T {

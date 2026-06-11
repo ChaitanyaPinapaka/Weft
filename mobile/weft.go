@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"weft/internal/core"
@@ -194,6 +195,52 @@ func (s *Session) Daily() (string, error) {
 	}
 	_ = core.ReindexNote(s.v, s.ix, s.emb, rel)
 	return rel, nil
+}
+
+// SearchNotes runs an FTS5 query over the local index and returns the hits as
+// a JSON array of index.Hit (PascalCase Path/Title/Snippet/Score — the same
+// shape as GET /api/search, including JSON null when nothing matches).
+func (s *Session) SearchNotes(query string) (string, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", errors.New("weft: empty query")
+	}
+	hits, err := s.ix.Search(q, 20)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(hits)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// Trash is the human-initiated soft delete, mirroring the daemon's DELETE
+// /api/note/{path}: the file moves into .trash/ (vault.Trash — bytes are never
+// deleted, per the never-delete invariant) and its rows leave the index, so the
+// note stops listing, searching, and surfacing. Returns {"trashed": path}.
+func (s *Session) Trash(path string) (string, error) {
+	// Mirror vault.Trash's traversal guard so the caller gets a clear error
+	// rather than its opaque permission error.
+	if strings.Contains(path, "..") {
+		return "", errors.New("weft: invalid path")
+	}
+	if !s.v.Exists(path) {
+		return "", errors.New("weft: note not found: " + path)
+	}
+	if err := s.v.Trash(path); err != nil {
+		return "", err
+	}
+	// The vault is authoritative: the file is already in .trash, so a failed
+	// index cleanup doesn't fail the call — indexAll's orphan sweep prunes the
+	// rows on the next reindex (launch or post-sync).
+	_ = s.ix.Remove(path)
+	b, err := json.Marshal(map[string]string{"trashed": path})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // LogAccess records a note open in the access log so session/co-access ranking

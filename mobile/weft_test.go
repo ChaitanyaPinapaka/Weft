@@ -175,6 +175,106 @@ func TestFacadeReadCaptureSurface(t *testing.T) {
 	}
 }
 
+// TestSearchNotes exercises the FTS facade: a captured note is findable, the
+// JSON is the daemon's GET /api/search shape ([]index.Hit, PascalCase), and a
+// blank query is rejected.
+func TestSearchNotes(t *testing.T) {
+	t.Setenv("WEFT_SECRET_STORE", "file")
+
+	s, err := Configure(filepath.Join(t.TempDir(), "V"), "fs", t.TempDir(), "", "", "", "")
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer s.Close()
+
+	daily, err := s.Capture("the xylophone fund")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	hitsJSON, err := s.SearchNotes("xylophone")
+	if err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	}
+	var hits []struct {
+		Path    string
+		Title   string
+		Snippet string
+		Score   float64
+	}
+	if err := json.Unmarshal([]byte(hitsJSON), &hits); err != nil {
+		t.Fatalf("SearchNotes JSON: %v (%s)", err, hitsJSON)
+	}
+	if len(hits) != 1 || hits[0].Path != daily {
+		t.Fatalf("SearchNotes should hit the daily %q once; got %s", daily, hitsJSON)
+	}
+	if !strings.Contains(hits[0].Snippet, "<mark>xylophone</mark>") {
+		t.Fatalf("snippet should mark the match; got %q", hits[0].Snippet)
+	}
+
+	if _, err := s.SearchNotes("   "); err == nil {
+		t.Fatal("SearchNotes should reject a blank query")
+	}
+}
+
+// TestTrash exercises the human-initiated soft delete: the note's bytes move to
+// .trash (never hard-deleted), its index rows go, the response is the daemon's
+// {"trashed": path} shape, and traversal / missing paths are rejected.
+func TestTrash(t *testing.T) {
+	t.Setenv("WEFT_SECRET_STORE", "file")
+
+	vaultDir := filepath.Join(t.TempDir(), "V")
+	s, err := Configure(vaultDir, "fs", t.TempDir(), "", "", "", "")
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer s.Close()
+
+	rel, err := s.Capture("a quixotic scheme")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	out, err := s.Trash(rel)
+	if err != nil {
+		t.Fatalf("Trash: %v", err)
+	}
+	var resp struct {
+		Trashed string `json:"trashed"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil || resp.Trashed != rel {
+		t.Fatalf("Trash should return {\"trashed\": %q}; got %s (err=%v)", rel, out, err)
+	}
+
+	// Never-delete invariant: the file left the vault but its bytes live on in .trash.
+	if _, err := os.Stat(filepath.Join(vaultDir, rel)); !os.IsNotExist(err) {
+		t.Fatalf("note should be gone from the vault; stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, ".trash", rel)); err != nil {
+		t.Fatalf("note bytes should survive in .trash: %v", err)
+	}
+
+	// The index rows went with it: the note no longer turns up in search.
+	hitsJSON, err := s.SearchNotes("quixotic")
+	if err != nil {
+		t.Fatalf("SearchNotes after trash: %v", err)
+	}
+	var hits []struct{ Path string }
+	if err := json.Unmarshal([]byte(hitsJSON), &hits); err != nil {
+		t.Fatalf("SearchNotes JSON: %v (%s)", err, hitsJSON)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("trashed note should not surface in search; got %s", hitsJSON)
+	}
+
+	if _, err := s.Trash("../escape.html"); err == nil {
+		t.Fatal("Trash should reject path traversal")
+	}
+	if _, err := s.Trash("no-such-note.html"); err == nil {
+		t.Fatal("Trash should reject a missing note")
+	}
+}
+
 // TestPairingEnrollsAndSyncs drives the SAS pairing wrappers end to end: the
 // facade is the new device (initiator); raw internal/sync plays the already-
 // enrolled Mac (what `weft sync pair-approve` does). It asserts the two SAS codes

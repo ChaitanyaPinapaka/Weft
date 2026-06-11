@@ -3,6 +3,12 @@
 #   - WeftKit       : the shared SwiftUI data/theme/reader layer (also used by macOS)
 #   - WeftMobile    : the gomobile xcframework embedding the Go engine (`make ios`)
 # so the phone is a full offline E2EE sync peer — no daemon.
+#
+# Capture surfaces (WeftShare, WeftWidgets) are PRODUCERS ONLY: they never link
+# the gomobile framework (extension memory limits; the engine's vault/index
+# state must have exactly one owner — the app process). The share extension and
+# the in-app CaptureToWeft intent queue JSON files in the App-Group inbox
+# (Shared/InboxQueue.swift); the widgets just deep-link weft:// URLs.
 name: Weft
 options:
   bundleIdPrefix: app.tryweft
@@ -18,17 +24,112 @@ targets:
     platform: iOS
     sources:
       - path: Weft
+      - path: Shared # InboxQueue producer, used by the CaptureToWeft App Intent
+    # xcodegen writes this Info.plist (and excludes it from sources); Xcode then
+    # merges the INFOPLIST_KEY_* build settings into it because
+    # GENERATE_INFOPLIST_FILE stays YES. Registers the weft:// URL scheme
+    # (weft://capture, weft://daily, weft://note?path=…).
+    info:
+      path: Weft/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: app.tryweft.ios
+            CFBundleURLSchemes: [weft]
+    # App Group shared with the extensions: they queue captures as JSON files in
+    # <group>/inbox/; the app consumes them on launch/foreground.
+    entitlements:
+      path: Weft/Weft.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.tryweft.shared
     dependencies:
       - package: WeftKit
       - framework: Frameworks/WeftMobile.xcframework
         embed: true
-        codeSign: false
+        # Device installs require embedded frameworks to be signed; simulator
+        # builds pass CODE_SIGNING_ALLOWED=NO, which skips signing anyway.
+        codeSign: true
+      - target: WeftShare
+        embed: true
+      - target: WeftWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.tryweft.ios
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 56D393Y5UZ
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  # Share-sheet capture: text + web URLs, optional comment, writes one inbox
+  # JSON file. No engine, no WeftKit — just UIKit/SwiftUI + the queue writer.
+  WeftShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WeftShare
+      - path: Shared
+    info:
+      path: WeftShare/Info.plist
+      properties:
+        CFBundleDisplayName: Weft
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+    entitlements:
+      path: WeftShare/WeftShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.tryweft.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tryweft.ios.share
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 56D393Y5UZ
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  # Home/lock-screen widgets: static deep links (weft://capture, weft://daily).
+  # Timelines are pure dates — no engine access, ever. The app-group
+  # entitlement is declared for parity with the other capture surfaces; the
+  # widgets don't currently read or write the inbox.
+  WeftWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WeftWidgets
+    info:
+      path: WeftWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Weft
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: WeftWidgets/WeftWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.tryweft.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tryweft.ios.widgets
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 56D393Y5UZ
+        GENERATE_INFOPLIST_FILE: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
