@@ -16,8 +16,12 @@ struct RootView: View {
         } detail: {
             readerPane
                 .inspector(isPresented: $showBrain) {
-                    BrainPanel()
-                        .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
+                    BrainPanel(
+                        surface: model.surface,
+                        titleFor: { model.titleFor($0) },
+                        onOpen: { model.open(path: $0) }
+                    )
+                    .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
                 }
                 .toolbar { toolbar }
         }

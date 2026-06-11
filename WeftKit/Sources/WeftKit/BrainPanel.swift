@@ -1,21 +1,35 @@
 import SwiftUI
-import WeftKit
 
 // The brain panel: what Weft would surface for the open note, rendered natively
-// from GET /api/surface. Mirrors web/viewer.js — thought trail, backlinks,
-// activation-ranked "surfaced" (filtered to Spread>0, temperature by opacity,
-// resurfaced marked with ✦), and on-this-day. Restraint over decoration.
-struct BrainPanel: View {
-    @Environment(AppModel.self) private var model
+// from the engine's surface payload. Mirrors web/viewer.js — thought trail,
+// backlinks, activation-ranked "surfaced" (filtered to Spread>0, temperature by
+// opacity, resurfaced marked with ✦), and on-this-day. Restraint over decoration.
+//
+// Shared by both surfaces. It takes its data and navigation as plain values
+// rather than reaching into an AppModel, so the macOS app (HTTP daemon) and the
+// iOS app (embedded gomobile engine) drive the same view — they differ only in
+// what they pass for `surface` / `titleFor` / `onOpen`.
+public struct BrainPanel: View {
+    private let surface: SurfacePayload
+    private let titleFor: (String) -> String
+    private let onOpen: (String) -> Void
+
+    public init(surface: SurfacePayload,
+                titleFor: @escaping (String) -> String,
+                onOpen: @escaping (String) -> Void) {
+        self.surface = surface
+        self.titleFor = titleFor
+        self.onOpen = onOpen
+    }
 
     private var scored: [Scored] {
-        Array((model.surface.scored ?? []).filter { $0.spread > 0 }.prefix(12))
+        Array((surface.scored ?? []).filter { $0.spread > 0 }.prefix(12))
     }
-    private var backlinks: [String] { model.surface.backlinks ?? [] }
-    private var onThisDay: [Candidate] { model.surface.onThisDay ?? [] }
-    private var trail: [String] { model.surface.trail ?? [] }
+    private var backlinks: [String] { surface.backlinks ?? [] }
+    private var onThisDay: [Candidate] { surface.onThisDay ?? [] }
+    private var trail: [String] { surface.trail ?? [] }
 
-    var body: some View {
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if trail.count > 1 { trailSection }
@@ -35,8 +49,8 @@ struct BrainPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Trail")
             // focus first; show the earlier-session path as faint crumbs.
-            FlowText(crumbs: trail.reversed().map { ($0, model.titleFor($0)) }) { path in
-                model.open(path: path)
+            FlowText(crumbs: trail.reversed().map { ($0, titleFor($0)) }) { path in
+                onOpen(path)
             }
         }
     }
@@ -49,7 +63,7 @@ struct BrainPanel: View {
                     .font(.system(size: 12)).foregroundStyle(Weft.muted)
             } else {
                 ForEach(backlinks, id: \.self) { path in
-                    LinkRow(title: model.titleFor(path)) { model.open(path: path) }
+                    LinkRow(title: titleFor(path)) { onOpen(path) }
                 }
             }
         }
@@ -61,7 +75,7 @@ struct BrainPanel: View {
             let denom = Double(max(1, scored.count - 1))
             ForEach(Array(scored.enumerated()), id: \.element.id) { idx, item in
                 SurfaceCard(item: item, opacity: temperature(Double(idx) / denom)) {
-                    model.open(path: item.path)
+                    onOpen(item.path)
                 }
             }
         }
@@ -71,7 +85,7 @@ struct BrainPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("On this day")
             ForEach(onThisDay) { c in
-                Button { model.open(path: c.path) } label: {
+                Button { onOpen(c.path) } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(c.displayTitle).font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Weft.text).lineLimit(1)
@@ -96,7 +110,7 @@ struct BrainPanel: View {
 }
 
 // A surfaced note: title, reason chips, resurfaced accent. The whole card is a
-// borderless button that fills on hover.
+// borderless button that fills on hover (macOS / iPad pointer; inert on touch).
 private struct SurfaceCard: View {
     let item: Scored
     let opacity: Double
