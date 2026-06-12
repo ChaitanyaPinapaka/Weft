@@ -102,6 +102,15 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
 	mux.HandleFunc("GET /api/params", getParamsHandler(ps))
 	mux.HandleFunc("POST /api/params", postParamsHandler(ps))
+	// Device pairing (the enrolled/responder side of `weft sync pair`). The
+	// single in-flight approval lives in pairs; confirm — never approve — is
+	// what seals the vault key for the new device.
+	pairs := newPairingStore()
+	mux.HandleFunc("GET /api/sync/pairing", listPairingHandler(v))
+	mux.HandleFunc("POST /api/sync/pairing/approve", approvePairingHandler(v, pairs))
+	mux.HandleFunc("GET /api/sync/pairing/status", pairingStatusHandler(pairs))
+	mux.HandleFunc("POST /api/sync/pairing/confirm", confirmPairingHandler(pairs))
+	mux.HandleFunc("POST /api/sync/pairing/cancel", cancelPairingHandler(pairs))
 	mux.HandleFunc("GET /tune", tuneRedirectHandler())
 	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(web.FS)))
 
@@ -121,10 +130,17 @@ func Run(vaultPath string) error {
 
 // withCORS makes /api/* reachable from the browser extension (origins like
 // `chrome-extension://…` and `moz-extension://…`) and from any local web
-// surface. The daemon is bound to localhost, so reads stay wide open (`*`) —
-// but mutating verbs are only CORS-approved for allowlisted origins: browsers
-// preflight DELETE, so approving every origin would let any web page trash
-// the vault cross-origin.
+// surface. The daemon is bound to localhost, so most reads stay wide open
+// (`*`) — but mutating verbs and the pairing control plane are restricted to
+// allowlisted origins.
+//
+// Crucially, CORS response headers only govern whether a browser may READ a
+// response; they do NOT stop a "simple" request (a text/plain or no-cors POST
+// needs no preflight) from EXECUTING server-side. So for anything that mutates
+// state or exposes the pairing control plane, we ENFORCE the origin here —
+// a present-but-disallowed Origin is rejected before the handler runs.
+// Non-browser clients (CLI, the native apps via URLSession) send no Origin and
+// pass through untouched.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -133,10 +149,28 @@ func withCORS(next http.Handler) http.Handler {
 				// Preflight: judge the method the browser intends to send.
 				method = r.Header.Get("Access-Control-Request-Method")
 			}
-			if method == http.MethodGet || method == http.MethodHead {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-			} else if origin := r.Header.Get("Origin"); mutatingOriginAllowed(origin) {
+			origin := r.Header.Get("Origin")
+			read := method == http.MethodGet || method == http.MethodHead
+			// The pairing endpoints (pending request ids + the live SAS) are a
+			// control plane, not note content — never open them to arbitrary
+			// web origins, even on GET.
+			sensitive := strings.HasPrefix(r.URL.Path, "/api/sync/pairing")
+			allowed := origin != "" && mutatingOriginAllowed(origin)
+
+			// Block execution for a disallowed cross-origin request that could
+			// mutate or read sensitive state. OPTIONS is the preflight itself —
+			// don't 403 it; denying ACAO below makes the browser withhold the
+			// real request anyway.
+			if r.Method != http.MethodOptions && origin != "" && !allowed && (!read || sensitive) {
+				http.Error(w, "cross-origin request forbidden", http.StatusForbidden)
+				return
+			}
+
+			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+			} else if read && !sensitive {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")

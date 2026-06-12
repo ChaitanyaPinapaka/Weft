@@ -204,12 +204,17 @@ func ListPairingRequests(be Backend) ([]string, error) {
 	return ids, nil
 }
 
+// ErrNoPairingRequest is returned by BeginApprove for an unknown reqID, so
+// callers (the daemon's pairing endpoints) can distinguish "no such request"
+// from a backend failure.
+var ErrNoPairingRequest = errors.New("sync: no such pairing request")
+
 // BeginApprove reads a pairing request and posts the enrolled device's key + nonce
 // (its nonce chosen BEFORE it learns the initiator's, which is still committed).
 func BeginApprove(be Backend, reqID string, vk VaultKey) (*PairApproval, error) {
 	reqBody, err := be.Get(pairPrefix(reqID) + "req")
 	if err != nil {
-		return nil, errors.New("sync: no such pairing request")
+		return nil, ErrNoPairingRequest
 	}
 	var req pairReq
 	if json.Unmarshal(reqBody, &req) != nil || len(req.InitiatorPub) != 32 || len(req.Commit) != commitLen {
