@@ -28,6 +28,20 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Resources/weftTemplate.png "$APP/Contents/Resources/weftTemplate.png"
 cp Resources/weftTemplate@2x.png "$APP/Contents/Resources/weftTemplate@2x.png"
 
+# "Set up this Mac" payloads. The weft CLI ships inside the app so the panel
+# can install it onto PATH without a separate download.
+if [ ! -x ../bin/weft ]; then
+  echo "error: ../bin/weft not found — run 'make build-ort' at the repo root first" >&2
+  exit 1
+fi
+mkdir -p "$APP/Contents/Resources/bin"
+cp ../bin/weft "$APP/Contents/Resources/bin/weft"
+# Chrome extension, unpacked, minus dotfiles — setup copies it to App Support.
+mkdir -p "$APP/Contents/Resources/extension"
+rsync -a --exclude='.*' ../ext/ "$APP/Contents/Resources/extension/"
+# Claude memory templates (CLAUDE.md marker block + slash commands).
+cp -R Resources/claude "$APP/Contents/Resources/claude"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

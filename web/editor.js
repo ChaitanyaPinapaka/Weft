@@ -82,6 +82,7 @@ let saveTimer = null;
 let inflight = false;
 let pending = false;
 let dirty = false;
+let stopped = false; // set by the host bridge to prevent any further saves
 // Suppress the initial setContent() from marking the doc dirty. TipTap fires
 // `update` on programmatic setContent unless we pass `emitUpdate:false`, but
 // being explicit with a guard is safer across versions.
@@ -380,6 +381,7 @@ async function load() {
 }
 
 async function save() {
+  if (stopped) return;
   if (!path) {
     setStatus('offline', 'no path');
     return;
@@ -433,6 +435,27 @@ window.addEventListener('beforeunload', () => {
       new Blob([assemble()], { type: 'text/html' }));
   }
 });
+
+// Host bridges for the native apps, which embed this page in a WKWebView.
+// WKWebView never fires beforeunload on programmatic navigation, so the host
+// drives the final save explicitly instead of relying on the beacon above.
+
+// Flush any pending edit and resolve ONLY once it has fully landed, so the
+// native reader can re-fetch without racing the 1s autosave timer.
+window.weftFlush = async function () {
+  clearTimeout(saveTimer);
+  if (dirty && path) await save();
+  while (inflight || pending) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+};
+
+// Stop saving for good — the host calls this before trashing the open note so a
+// queued autosave can't recreate the file in the vault after it's been removed.
+window.weftStop = function () {
+  stopped = true;
+  clearTimeout(saveTimer);
+};
 
 // ----- Brain panel ---------------------------------------------------------
 // Why debounced: a rapid save burst (e.g. paste, then immediate Cmd-S) would

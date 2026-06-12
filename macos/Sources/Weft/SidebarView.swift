@@ -83,6 +83,12 @@ struct SidebarView: View {
                 )
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            // Soft remove — RootView's alert confirms with the never-delete wording.
+            Button("Remove (moves to .trash/)", role: .destructive) {
+                model.requestTrash(note.path)
+            }
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {

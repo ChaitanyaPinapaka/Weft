@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import WebKit
 import WeftKit
 
 // The single source of UI truth. Owns the client, the SSE stream, and the
@@ -16,6 +17,22 @@ final class AppModel {
     var surface: SurfacePayload = .empty
     var loading = false
 
+    // Reader/editor toggle. While true the reader pane hosts the daemon's
+    // editor page for the current note; the editor owns the whole save flow
+    // (autosave + unload beacon), the app only hosts it. Sticky across
+    // navigation: following a link while editing edits the target.
+    var editing = false
+
+    // Path staged for trashing; RootView's confirm alert completes or cancels.
+    var pendingTrash: String?
+
+    // A user-facing error (trash failed, etc.); RootView shows it in an alert.
+    var errorMessage: String?
+
+    // The reader pane's live web view, registered by ReaderView. Used to drive
+    // the embedded editor's save/stop bridges when leaving or trashing a note.
+    weak var activeWebView: WKWebView?
+
     // Daemon connection (driven by the SSE stream's status).
     var connected = false
 
@@ -25,6 +42,12 @@ final class AppModel {
     var hasUnseen = false
     // Transient toast shown in-window when a push arrives while Weft is focused.
     var toast: SurfaceEvent?
+
+    // "Set up this Mac" sheet (RootView presents it; the Note menu toggles it).
+    var showSetup = false
+
+    // "Add a Device" pairing sheet (Note menu, plus the setup panel's footer).
+    var showAddDevice = false
 
     private let client = WeftClient()
     private var stream: SurfaceStream?
@@ -40,6 +63,18 @@ final class AppModel {
         stream?.start()
         Task { await reloadNotes() }
         Task { await openDaily() }
+        Task { await maybeOfferSetup() }
+    }
+
+    // Auto-open the setup panel when no weft daemon answers. The agent plist's
+    // existence proves nothing — the job may be dead or crash-looping (vault
+    // moved), which needs the panel just as much as a fresh Mac does.
+    private func maybeOfferSetup() async {
+        for _ in 0..<2 { // second try bridges a daemon (re)start racing app launch
+            if await SetupModel.daemonReachable() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        showSetup = true
     }
 
     func reloadNotes() async {
@@ -90,6 +125,89 @@ final class AppModel {
     func titleFor(_ path: String) -> String {
         notes.first { $0.path == path }?.title
             ?? (path as NSString).lastPathComponent.replacingOccurrences(of: ".html", with: "")
+    }
+
+    // MARK: - Editing
+
+    func beginEditing() {
+        guard doc != nil else { return }
+        editing = true
+    }
+
+    /// Done: flush the editor's pending save, wait for it to land, then swap
+    /// back to the reader and re-read the note. WKWebView never fires the
+    /// editor's beforeunload beacon on programmatic navigation, so we drive the
+    /// save explicitly via the weftFlush bridge instead of racing a fixed sleep.
+    func finishEditing() async {
+        guard editing else { return }
+        guard let path = currentPath else { editing = false; return }
+        await flushEditor() // returns only once the final save has landed
+        editing = false
+        // Bail if the user already moved on (or re-entered the editor).
+        guard currentPath == path, !editing else { return }
+        if let raw = try? await client.rawHTML(path: path) {
+            doc = ReaderDoc.parse(rawHTML: raw, path: path, fallbackTitle: titleFor(path))
+        }
+        surface = (try? await client.surface(path: path)) ?? surface
+        await reloadNotes() // sidebar title / mod-date may have changed
+    }
+
+    /// Drive the embedded editor's final save and wait for it to land.
+    private func flushEditor() async {
+        guard let web = activeWebView else { return }
+        _ = try? await web.callAsyncJavaScript(
+            "await window.weftFlush?.()", arguments: [:], in: nil, contentWorld: .page)
+    }
+
+    /// Stop the embedded editor from issuing any further saves — used before
+    /// trashing the open note so a queued autosave can't recreate it.
+    private func stopEditor() async {
+        guard let web = activeWebView else { return }
+        _ = try? await web.callAsyncJavaScript(
+            "window.weftStop?.()", arguments: [:], in: nil, contentWorld: .page)
+    }
+
+    // MARK: - Trash
+
+    /// Stage a trash request; the confirm alert calls trash() or clears this.
+    func requestTrash(_ path: String) { pendingTrash = path }
+
+    /// Soft remove: the daemon moves the file to .trash/ in the vault — nothing
+    /// is deleted — and drops it from the index, so it leaves listings and
+    /// surfacing. If the trashed note was open, fall to the freshest remaining
+    /// note (or recreate today's daily in an emptied vault).
+    func trash(path: String) {
+        pendingTrash = nil
+        Task {
+            // If we're editing the very note being trashed, silence its autosave
+            // first — otherwise a queued save could recreate the file in the
+            // vault right after the daemon moves it to .trash/.
+            if editing, currentPath == path {
+                await stopEditor()
+            }
+            do {
+                try await client.trash(path: path)
+            } catch {
+                WeftLog.write("trash failed path=\(path): \(error)")
+                errorMessage = "Couldn’t remove \(titleFor(path)). \(error.localizedDescription)"
+                return
+            }
+            inbox.removeAll { $0.path == path }
+            if toast?.path == path { dismissToast() }
+            refreshUnseen()
+            await reloadNotes()
+            if currentPath == path {
+                editing = false
+                currentPath = nil
+                doc = nil
+                surface = .empty
+                if let next = notes.first?.path {
+                    open(path: next)
+                } else {
+                    await openDaily()
+                }
+            }
+        }
     }
 
     // MARK: - Capture

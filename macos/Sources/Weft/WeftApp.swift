@@ -22,12 +22,36 @@ struct WeftApp: App {
                     .keyboardShortcut("t", modifiers: .command)
                 Button("Quick Capture…") { delegate.toggleCapturePanel() }
                     .keyboardShortcut("n", modifiers: .command)
+                GraphMenuItem()
+                Divider()
+                Button("Set Up This Mac…") { model.showSetup = true }
+                Button("Add a Device…") { model.showAddDevice = true }
             }
         }
+
+        // The vault graph in its own window: the D3 layout wants room, and a
+        // separate scene leaves the reader/sidebar state untouched.
+        Window("Graph", id: "graph") {
+            GraphWindow()
+                .environment(model)
+        }
+        .windowStyle(.titleBar)
+        .defaultSize(width: 960, height: 720)
         // The menu-bar item is an AppKit NSStatusItem (see AppDelegate), not a
         // SwiftUI MenuBarExtra: MenuBarExtra(image:) only resolves names from a
         // compiled asset catalog, but NSImage(named:) finds our loose template
         // PNG, so the woven glyph renders reliably.
+    }
+}
+
+// openWindow only exists in the SwiftUI environment, which App structs don't
+// carry — so the Graph menu item is a tiny view.
+private struct GraphMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Graph") { openWindow(id: "graph") }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
     }
 }
 
