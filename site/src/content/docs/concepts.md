@@ -19,6 +19,8 @@ This has consequences worth being explicit about:
 HTML is the native format of the web and of the things you clip, and it carries rich structure cleanly. A markdown layer would mean a lossy round-trip on every save. Weft refuses that trade.
 :::
 
+You still get a fast way to write it. The editor surfaces `[[wikilinks]]` for connecting notes and a `/` slash-command menu for inserting structure, and saves plain HTML underneath. The wikilinks you type become the `<a href>` links the index parses for backlinks — so authoring and surfacing are the same act seen from two ends.
+
 ## The index is derived, never authored
 
 Everything Weft needs to be fast lives in a SQLite index built *from* the HTML — never the other way around. It holds an FTS5 full-text table for lexical search, an embeddings blob for semantic similarity, and backlinks parsed from `<a href>` on each save.
@@ -51,11 +53,21 @@ The result is a list that reflects both how memorable a note is on its own and h
 The brain panel has an **explain** toggle: turn it on and each surfaced note shows the signals that put it there — the backlink, the similarity, the co-access, the date. A separate tuning page lets you adjust the weights behind the model if the defaults do not match how you think.
 :::
 
+## The graph: the same model, seen whole
+
+The brain panel shows associations one note at a time. The **graph view** shows them all at once — a map of the vault that draws on the same signals. Each note is a node; the layout is the shape of how your notes connect.
+
+- **Folder clusters** — nodes are coloured by the folder they live in, so the vault's structure reads at a glance.
+- **Two kinds of edge** — solid edges are backlinks parsed from `<a href>`; fainter edges are semantic-similarity links from the embeddings. A note can be tied to another by a link you wrote or by what it is about, and the graph distinguishes the two.
+- **Activation sizing** — each node is sized by its activation (the same recency-plus-frequency base level from the ranking model), so the notes most alive in your memory stand out.
+
+Hover a node to highlight its neighbourhood, read the legend for the encoding, and use the tag and minimum-link filters and minimap to navigate a dense vault. It is the surfacing model made visible: the same backlinks, semantic neighbours, and activation, laid out as a brain map rather than a ranked list.
+
 ## What works in the prebuilt binary
 
 One distinction matters. The one-line-installer binary ships a **stub embedder**, so semantic neighbors are the one signal it does not compute. Everything else in the model — backlinks, co-access, this-day, recency and frequency decay, spreading activation — works fully out of the box.
 
-Semantic neighbors are an opt-in upgrade you get by building from source. `make build-ort` swaps in a local CPU embedding model (all-MiniLM-L6-v2, 384-dimensional, ~22–30 MB) via ONNX. It runs entirely on your machine — no API, nothing leaves the device.
+Semantic neighbors are an opt-in upgrade you get by building from source. `make build-ort` swaps in a local CPU embedding model (all-MiniLM-L6-v2, 384-dimensional) via ONNX. It runs entirely on your machine — no API, nothing leaves the device.
 
 ```sh
 # default build: every signal except semantic neighbors
@@ -75,7 +87,7 @@ Full-text search exists — it is the FTS5 table in the index — but it is deli
 
 - **Files you own** — Plain `.html` in a folder. No markdown layer, no lock-in, nothing ever deleted by the system.
 - **A derived index** — SQLite with FTS5, embeddings, and parsed backlinks — rebuilt from the HTML, never the source of truth.
-- **Surfacing over search** — The brain panel shows backlinks, semantic neighbors, co-accessed notes, and this-day-in-past-years.
+- **Surfacing over search** — The brain panel shows backlinks, semantic neighbors, co-accessed notes, and this-day-in-past-years; the graph view maps the same signals whole.
 - **Memory-style ranking** — ACT-R activation: recency and frequency decay plus spreading activation, with an explain toggle.
 
 [Getting started](/getting-started)

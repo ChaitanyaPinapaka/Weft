@@ -17,6 +17,7 @@ export default defineConfig({
         { label: 'Start', items: [
           { label: 'Getting started', slug: 'getting-started' },
           { label: 'Install', slug: 'install' },
+          { label: 'Apps & surfaces', slug: 'apps' },
         ]},
         { label: 'Concepts', items: [{ label: 'Concepts', slug: 'concepts' }] },
         { label: 'Sync', items: [

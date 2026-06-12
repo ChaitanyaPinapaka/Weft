@@ -1,9 +1,9 @@
 ---
 title: "MCP for Claude Code"
-description: "Run weft mcp to expose your vault to Claude Code over stdio \u2014 read, search, surface, and write notes from inside Claude Code."
+description: "Run weft mcp to expose your vault to Claude Code over stdio \u2014 list, read, search, surface, and write notes from inside Claude Code."
 ---
 
-Weft ships an MCP server. Point Claude Code at your vault and it can read, search, surface, and write notes — directly, without copy-paste.
+Weft ships an MCP server. Point Claude Code at your vault and it can list, read, search, surface, and write notes — directly, without copy-paste.
 
 ## What it does
 
@@ -45,6 +45,7 @@ After editing the config, restart Claude Code so it spawns the server. The tools
 
 | Capability | Backed by |
 | --- | --- |
+| List every note | The vault folder on disk |
 | Read a note | The `.html` file on disk |
 | Search the vault | SQLite FTS5 lexical search |
 | Surface related notes | The same signals as the brain panel — backlinks, recency, co-access |

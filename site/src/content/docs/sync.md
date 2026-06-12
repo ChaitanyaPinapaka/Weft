@@ -9,7 +9,7 @@ Weft syncs your vault through object storage you own, end-to-end encrypted. Ther
 
 Your notes are plain `.html` files. Sync should keep them clean and keep you in control of where they live. So Weft makes two choices:
 
-- **Own your storage** — You point Weft at a bucket you control. Cloudflare R2 by default (zero egress), or AWS S3, Backblaze B2, MinIO, or any S3-compatible storage. Weft runs no server in the middle.
+- **Own your storage** — You point Weft at a bucket you control. Cloudflare R2 by default (zero egress), or AWS S3, Backblaze B2, Google Cloud Storage, MinIO, or any S3-compatible storage. Weft runs no server in the middle.
 - **Zero-knowledge cloud** — Everything written to the bucket is sealed with XChaCha20-Poly1305. The cloud sees only ciphertext and can decrypt nothing. Your storage credentials decrypt nothing either.
 
 ## What it guarantees

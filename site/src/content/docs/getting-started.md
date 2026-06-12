@@ -16,6 +16,10 @@ Weft is a single pure-Go binary for macOS, Linux, and Windows. No runtime depend
 curl -fsSL https://tryweft.app/install.sh | sh
 ```
 
+:::note[On a Mac, let the native app do the wiring]
+The native macOS app has a **Set up this Mac** panel that does the curl step and more in a few clicks: it installs the daemon as a launchd LaunchAgent (starts at login, restarts on crash — no terminal left open), installs the CLI, the Chrome extension, and the MCP server, and wires your vault into Claude as memory. The **iPhone app** is a different shape — a standalone, offline sync peer that holds its own vault and needs no daemon at all. See [Install](/install#native-apps) for both.
+:::
+
 ### Windows
 
 Download `weft-windows-amd64.exe` and drop it somewhere on your `PATH` (rename to `weft.exe` if you like). See the [install page](/install) for direct download links and checksums.

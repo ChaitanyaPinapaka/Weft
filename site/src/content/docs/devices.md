@@ -18,6 +18,8 @@ Both methods end with the same result: the new device holds the vault key and ca
 | `weft sync pair` | Nothing typed on the new device; you confirm an 8-digit code on both screens | You have access to an already-enrolled device |
 | `weft sync join` | The shared passphrase | You only have the passphrase, not another device |
 
+Either method can be driven from the CLI or from a GUI. The macOS app has an **Add a Device** sheet that runs the same pairing flow and shows the same 8-digit code to compare; the iPhone enrols by pairing with an already-enrolled device or by reconstructing the vault from the 24-word recovery phrase. The CLI commands below are the canonical description of what those sheets do.
+
 ## Pairing without the passphrase
 
 Pairing transfers the vault key from an enrolled device to a new one without anyone typing the passphrase. It is the recommended path.
@@ -35,6 +37,10 @@ weft sync pair-approve <code>
 ```
 
 Both screens then show an **8-digit code** — a short authentication string (SAS). Compare the two codes. If they match, confirm on both devices; if they differ, abort. Only after both sides confirm is the vault key handed over.
+
+:::note[From a GUI]
+The macOS app's **Add a Device** sheet and the iPhone's pairing screen run exactly this flow without the terminal: one side starts pairing, the other approves, and both show the same 8-digit SAS to compare side by side. The check below applies the same way — confirm only when the digits match on both screens.
+:::
 
 :::caution[Why the SAS matters]
 The key handover is end-to-end encrypted and resistant to a man-in-the-middle — including the cloud itself. The 8-digit code is what closes that gap: a network or storage attacker who tried to interpose would produce a different SAS on each screen. Comparing the digits out-of-band (read them aloud, look at both screens) is the step that makes the transfer MITM-resistant. Do not skip it.
@@ -84,6 +90,8 @@ weft sync recover --phrase "word1 word2 ... word24"
 ```
 
 Recovery rebuilds the vault from the ciphertext in your bucket using the key the phrase derives. The local SQLite index is not synced; each device rebuilds it from the `.html` files after recovery.
+
+The iPhone uses this same phrase to enrol when you do not have a second device to pair with: enter the 24-word phrase in the app and it reconstructs the vault key on-device, no daemon involved.
 
 ## The security model, precisely
 

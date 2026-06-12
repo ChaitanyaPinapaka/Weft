@@ -36,7 +36,7 @@ const desc =
         <div class="wrap">
           <p class="eyebrow">Surfacing, not searching</p>
           <h1>Open a note. See what your brain would recall now.</h1>
-          <p class="lede">A thousand notes, and you recall maybe forty. The rest are dormant, not gone. Weft is a folder of plain <code>.html</code> files you own. Open any note and it surfaces what connects to it: backlinks, semantic neighbors, co-accessed notes, this day in past years. No search bar. The connection finds you.</p>
+          <p class="lede">A thousand notes, and you recall maybe forty. The rest are dormant, not gone. Weft is a folder of plain <code>.html</code> files you own. Open any note and it surfaces what connects to it: backlinks, semantic neighbors, co-accessed notes, this day in past years. No search bar. The connection finds you. It runs where you do — desktop, browser, terminal, and now your phone.</p>
           <div class="threads"></div>
           <div class="btns">
             <a class="btn primary" href="/install">Install Weft</a>
@@ -54,8 +54,8 @@ const desc =
           <div class="card"><h3>Recently co-accessed</h3><p>The notes you tend to open alongside this one resurface together.</p></div>
           <div class="card"><h3>This day in past years</h3><p>What you wrote on this date before, surfaced when it is relevant again.</p></div>
         </div>
-        <p class="muted">An explain toggle shows <em>why</em> each note surfaced, and a tuning page lets you adjust the weights. Dormant notes rank lower but are never removed. Full-text search (SQLite FTS5) is there as a fallback, not the front door.</p>
-        <div class="note"><strong>On embeddings:</strong> recency, backlinks, and co-access surfacing work fully in the prebuilt binary. Semantic neighbors require building from source with <code>make build-ort</code>, which swaps in a local CPU model (all-MiniLM-L6-v2, 384-dim, ~22-30MB) via ONNX. Local, no API.</div>
+        <p class="muted">An explain toggle shows <em>why</em> each note surfaced, and a tuning page lets you adjust the weights. The same connections render as a graph: nodes colored by folder, sized by activation, drawn with backlink edges and fainter semantic-similarity edges. Dormant notes rank lower but are never removed. Full-text search (SQLite FTS5) is there as a fallback, not the front door.</p>
+        <div class="note"><strong>On embeddings:</strong> recency, backlinks, and co-access surfacing work fully in the prebuilt binary. Semantic neighbors require building from source with <code>make build-ort</code>, which swaps in a local CPU model (all-MiniLM-L6-v2, 384-dim) via ONNX. Local, no API.</div>
       </section>
 
       <section class="wrap">
@@ -63,8 +63,8 @@ const desc =
         <p class="muted">HTML is the canonical format — never a markdown intermediate. Notes are publishable as-is, and clipping a web page is essentially a copy. The index (SQLite, FTS5, embeddings, backlinks) is derived and rebuilt on each device; it is never synced.</p>
         <div class="grid">
           <div class="card"><h3>Plain HTML on disk</h3><p>A folder you own, sub-folders allowed. Delete Weft tomorrow and every note still opens in any browser.</p></div>
-          <div class="card"><h3>No accounts, no server</h3><p>There is no Weft account and no server we run. One Go binary, a local daemon at <code>localhost:7777</code>.</p></div>
-          <div class="card"><h3>Bring your own cloud</h3><p>Optional sync runs through object storage you own: Cloudflare R2, AWS S3, Backblaze B2, MinIO, or any S3-compatible bucket.</p></div>
+          <div class="card"><h3>No accounts, no server</h3><p>There is no Weft account and no hosted Weft server. One Go binary, a local daemon at <code>localhost:7777</code>. <code>tryweft.app</code> is a static site that never sees a vault or a key.</p></div>
+          <div class="card"><h3>Bring your own cloud</h3><p>Optional sync runs through object storage you own: Cloudflare R2, AWS S3, Backblaze B2, Google Cloud Storage, MinIO, or any S3-compatible bucket.</p></div>
           <div class="card"><h3>End-to-end encrypted</h3><p>One vault key, generated on your device and never uploaded. Blobs and manifests sealed with XChaCha20-Poly1305.</p></div>
         </div>
         <div class="note"><strong>The cloud holds only ciphertext.</strong> The vault key never leaves your devices, and your cloud credentials decrypt nothing. Sync is file-level, not CRDT, so the HTML stays clean. Concurrent edits are detected by version vectors and become a conflict-copy — never a silent overwrite, never data loss. Deletions go to a <code>.trash</code> folder, not gone.</div>
@@ -73,13 +73,17 @@ const desc =
 
       <section class="wrap">
         <h2>One daemon, many surfaces</h2>
-        <p class="muted">Every surface is a thin client over the same local daemon, so there is one source of truth.</p>
+        <p class="muted">On the desktop, every surface is a thin client over the same local Go daemon at <code>localhost:7777</code>, so there is one source of truth. The phone is the exception: it carries the engine with it.</p>
         <div class="grid">
-          <div class="card"><h3>MCP for Claude Code</h3><p><code>weft mcp &lt;vault&gt;</code> exposes the vault over stdio. Claude Code can read, search, surface, and write notes directly. <a href="/mcp">Set up MCP</a>.</p></div>
-          <div class="card"><h3>Desktop web app</h3><p>Vault browser, reader, a TipTap editor with <code>[[wikilinks]]</code> and daily notes, the brain panel, and a graph view of your links.</p></div>
-          <div class="card"><h3>Browser extension</h3><p>A web clipper plus brain-panel sidebar, proxied through the daemon — no CORS, no third party.</p></div>
-          <div class="card"><h3>CLI</h3><p>Capture, clip, import, and sync from the terminal where you already live.</p></div>
+          <div class="card"><h3>Native macOS app</h3><p>A SwiftUI menu-bar app and window: reader, quick capture, in-app editing, the graph in the main window, and trash. Ambient surfacing is pushed live from the daemon over SSE — related notes arrive without your asking. A <strong>Set up this Mac</strong> panel installs the CLI, runs the daemon as a launchd agent that starts at login, adds the Chrome extension and MCP server, and wires the vault into Claude as memory. Signed local build.</p></div>
+          <div class="card"><h3>iPhone app</h3><p>A full offline sync peer: it embeds the Go engine, holds its own vault and index, and syncs end-to-end encrypted straight to your bucket with no daemon to run. Read, capture, surface, search, edit, and trash on-device, with native Apple <code>NLEmbedding</code> for semantic neighbors. Capture from the share sheet, lock- and home-screen widgets, a Siri shortcut, or a <code>weft://</code> link. Installed via Xcode or TestFlight — not the App Store.</p></div>
+          <div class="card"><h3>Graph view</h3><p>The vault as a map: nodes colored by folder cluster and sized by activation, with backlink edges and faint semantic-similarity edges from local embeddings. A legend, a minimap, hover-to-highlight a note's neighborhood, and tag and min-link filters. On desktop in the web app, and inside the macOS window.</p></div>
+          <div class="card"><h3>MCP for Claude Code</h3><p><code>weft mcp &lt;vault&gt;</code> exposes the vault over stdio. Claude Code and other MCP clients can list, read, search, surface, and write notes directly. <a href="/mcp">Set up MCP</a>.</p></div>
+          <div class="card"><h3>Desktop web app</h3><p>Runs anywhere the daemon does. Vault browser, reader, a TipTap editor with <code>[[wikilinks]]</code>, a <code>/</code> slash-command menu, a selection toolbar, daily notes, the brain panel, and the graph.</p></div>
+          <div class="card"><h3>Browser extension</h3><p>Chrome and Firefox (MV3): a web clipper with Readability article extraction, right-click clip-selection, a quick-capture overlay, and the brain-panel sidebar. Talks only to <code>localhost:7777</code> — no third party.</p></div>
+          <div class="card"><h3>CLI</h3><p>Capture, clip, import, serve, run the MCP server, and sync from the terminal where you already live.</p></div>
         </div>
+        <div class="note"><strong>Native GUI apps are macOS and iOS only.</strong> Linux and Windows get the CLI, the daemon, and the desktop web app — everything but a native window. There is no App Store or Play Store: macOS is a signed local build, iOS goes through Xcode or TestFlight.</div>
         <pre><code><span class="tok-c"># append a thought to today's daily note</span>
 <span class="tok-cmd">weft</span> capture "the weft is the thread woven through the warp"
 
