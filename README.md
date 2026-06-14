@@ -38,6 +38,53 @@ weft capture "quick note"   # capture to today's daily note  (v0.2)
 weft clip https://...       # clip a URL to vault             (v0.2)
 ```
 
+## Native apps
+
+Build the macOS and iOS apps from source with the `make` targets below. (There
+are no notarized downloads — you build and sign with your own developer
+identity.)
+
+### macOS
+
+A thin native client over the daemon — read, capture, and the brain panel, plus
+proactive surfacing pushed over SSE. Requires **Xcode (Swift 5.9+)** and
+**macOS 14+**.
+
+```sh
+make build-ort      # 1. build bin/weft — the app bundles it for its setup panel
+                    #    (plain `make build` works too; -ort adds local embeddings)
+make run            # 2. start the daemon the app talks to (weft serve ~/notes)
+make app-run        # 3. build + launch macos/build/Weft.app
+                    #    build only:  make app
+```
+
+The app is packaged as a signed `.app` at `macos/build/Weft.app` — run the
+bundle (not the bare binary) so notifications work. If you have no signing
+identity it falls back to an ad-hoc signature and macOS will block its banner
+notifications; create one in Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates.
+See [`macos/README.md`](macos/README.md) for details.
+
+### iOS
+
+A full **offline sync peer** — no daemon required. The Go engine (vault, SQLite
+index, E2EE sync) is compiled into an `xcframework` via gomobile; semantic
+surfacing uses a native on-device embedder. Requires **Xcode + the iOS SDK**,
+**iOS 17+**, and **XcodeGen** (`brew install xcodegen`).
+
+```sh
+make ios            # 1. bind the Go engine → ios/Frameworks/WeftMobile.xcframework
+                    #    (auto-installs gomobile/gobind on first run)
+make ios-sim        # 2a. generate the project, build, and run in the Simulator
+                    #     pick a device: make ios-sim SIM="iPhone 16"
+```
+
+To run on a physical device, generate the Xcode project, open it, set your
+signing team, and Run:
+
+```sh
+cd ios && xcodegen generate && open Weft.xcodeproj
+```
+
 ## Vault
 
 A vault is any folder of `.html` files. Sub-folders allowed. Nothing is ever deleted by Weft — dormant notes are ranked lower in surfacing, not removed.
