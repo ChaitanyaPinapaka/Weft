@@ -236,9 +236,27 @@ func (ix *Index) Remove(path string) error {
 	return tx.Commit()
 }
 
+// ftsMatchQuery turns a raw user query into a safe FTS5 MATCH expression.
+// Each whitespace-separated token is wrapped as a quoted string literal (with
+// embedded quotes doubled), so characters FTS5 treats as operators — "+", ":",
+// quotes, parens, "*", "^" — are searched literally instead of raising a query
+// syntax error. Tokens are space-joined, which FTS5 reads as implicit AND.
+// Returns "" when the query has no tokens.
+func ftsMatchQuery(raw string) string {
+	fields := strings.Fields(raw)
+	for i, f := range fields {
+		fields[i] = `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+	}
+	return strings.Join(fields, " ")
+}
+
 func (ix *Index) Search(query string, limit int) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	match := ftsMatchQuery(query)
+	if match == "" {
+		return nil, nil
 	}
 	rows, err := ix.db.Query(
 		`SELECT f.path, COALESCE(n.title, ''), snippet(notes_fts, 2, '<mark>', '</mark>', '…', 16), bm25(notes_fts)
@@ -246,7 +264,7 @@ func (ix *Index) Search(query string, limit int) ([]Hit, error) {
 		  WHERE notes_fts MATCH ?
 		  ORDER BY bm25(notes_fts)
 		  LIMIT ?`,
-		query, limit,
+		match, limit,
 	)
 	if err != nil {
 		return nil, err

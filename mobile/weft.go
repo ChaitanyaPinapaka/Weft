@@ -147,11 +147,32 @@ func (s *Session) ListNotes() (string, error) {
 
 // ReadRaw returns the raw .html bytes of a note as a string.
 func (s *Session) ReadRaw(path string) (string, error) {
+	// vault.Read has no traversal guard, so enforce one here: reject ".." and
+	// any hidden segment. Without this, the iOS weft://note?path= scheme could
+	// read .weft/sync/secrets.json (vault key + cloud secret) or trashed notes.
+	if !safeVaultPath(path) {
+		return "", errors.New("weft: invalid path")
+	}
 	b, err := s.v.Read(path)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// safeVaultPath reports whether a caller-supplied path stays inside the visible
+// vault: no "..", and no dot-prefixed segment (.weft holds sync secrets, .trash
+// holds deleted notes — neither should be readable through the bridge).
+func safeVaultPath(path string) bool {
+	if path == "" || strings.Contains(path, "..") {
+		return false
+	}
+	for _, seg := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
+		if strings.HasPrefix(seg, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 // Surface computes the brain-panel payload for a focus note and returns it as

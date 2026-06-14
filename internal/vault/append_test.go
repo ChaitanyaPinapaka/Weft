@@ -4,11 +4,42 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"weft/internal/vault"
 )
+
+// TestAppendCaptureConcurrent verifies the read-modify-write is serialized:
+// N concurrent captures into the same daily note must all survive (no lost
+// updates). Run with -race to also catch data races on the shared file.
+func TestAppendCaptureConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	v, _ := vault.New(dir)
+	day := time.Date(2026, 5, 25, 9, 0, 0, 0, time.UTC)
+
+	const n = 25
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := v.AppendCapture(day, "idea-"+string(rune('a'+i))); err != nil {
+				t.Errorf("AppendCapture: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := v.Read("daily/2026-05-25.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := strings.Count(string(got), `<blockquote class="capture"`); c != n {
+		t.Fatalf("expected %d captures, got %d (lost updates)", n, c)
+	}
+}
 
 func TestAppendCaptureCreatesDaily(t *testing.T) {
 	dir := t.TempDir()

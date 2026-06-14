@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,10 @@ type Note struct {
 // Vault is a directory of .html files on disk.
 type Vault struct {
 	Root string // absolute path to vault directory
+
+	// captureMu serializes the read-modify-write in AppendCapture so two
+	// concurrent captures into the same daily note can't clobber each other.
+	captureMu sync.Mutex
 }
 
 // New returns a Vault rooted at root. The directory must already exist.

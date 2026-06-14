@@ -49,6 +49,9 @@ Usage:
                                     --provider {r2|aws|minio|b2|fs} --bucket --endpoint
                                     --region --access-key --secret --path-style --fs-path
 
+Prefer the WEFT_SECRET env var (or AWS_SECRET_ACCESS_KEY) over --secret so the
+cloud secret key stays off the process list and shell history.
+
 The vault key is cached in your OS keychain after init/join/pair, so the daemon
 and "weft sync" need no passphrase on that device (WEFT_SECRET_STORE=file forces
 the on-disk fallback for headless hosts).
@@ -388,6 +391,15 @@ func runSync(args []string) error {
 	}
 	if passphrase == "" {
 		passphrase = os.Getenv("WEFT_PASSPHRASE")
+	}
+	// Prefer the env for the long-lived cloud secret so it stays off argv (and
+	// out of `ps`/shell history). --secret remains as a fallback.
+	if cfg.SecretAccessKey == "" {
+		if s := os.Getenv("WEFT_SECRET"); s != "" {
+			cfg.SecretAccessKey = s
+		} else {
+			cfg.SecretAccessKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+		}
 	}
 
 	v, err := vault.New(resolveVault(vaultPath))

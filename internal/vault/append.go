@@ -36,6 +36,11 @@ func (v *Vault) AppendCapture(t time.Time, text string) (string, error) {
 		return "", ErrEmptyCapture
 	}
 
+	// Serialize the whole read-parse-write: concurrent captures into the same
+	// daily note would otherwise race and silently drop one. Never lose a thought.
+	v.captureMu.Lock()
+	defer v.captureMu.Unlock()
+
 	rel, err := v.EnsureDaily(t)
 	if err != nil {
 		return "", err

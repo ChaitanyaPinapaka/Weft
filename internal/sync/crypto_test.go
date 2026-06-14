@@ -65,3 +65,30 @@ func TestKeyFileWrapUnwrap(t *testing.T) {
 		t.Fatalf("unwrap after marshal round-trip failed: %v", err)
 	}
 }
+
+func TestKeyFileRejectsHostileArgonParams(t *testing.T) {
+	// A keyfile is read from the (untrusted) bucket on Join, and its Argon2
+	// params drive the KDF *before* the AEAD tag is checked. Unwrap must reject
+	// out-of-range params instead of attempting a multi-terabyte allocation.
+	vk, _ := NewVaultKey()
+	good, err := WrapVaultKey(vk, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		mut  func(KeyFile) KeyFile
+	}{
+		{"huge memory", func(kf KeyFile) KeyFile { kf.MemKiB = ^uint32(0); return kf }},
+		{"zero memory", func(kf KeyFile) KeyFile { kf.MemKiB = 0; return kf }},
+		{"zero time", func(kf KeyFile) KeyFile { kf.Time = 0; return kf }},
+		{"zero threads", func(kf KeyFile) KeyFile { kf.Threads = 0; return kf }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.mut(good).Unwrap("pw"); err == nil {
+				t.Fatal("Unwrap accepted out-of-range Argon2 params")
+			}
+		})
+	}
+}

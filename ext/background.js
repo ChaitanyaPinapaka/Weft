@@ -19,9 +19,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // Runs inside the page. Distill the article with Readability when the page
-// looks like an article; otherwise fall back to the full DOM. The daemon
-// sanitizes either way (scripts, event handlers); our job is only to drop the
-// chrome — nav, ads, banners — that would pollute FTS and embeddings.
+// looks like an article; otherwise fall back to the full DOM. Our job here is
+// to drop the chrome — nav, ads, banners — that would pollute FTS and
+// embeddings. Active content (scripts, event handlers, javascript:/data: URLs,
+// iframes) is stripped by the daemon's clip.Clean before the page is stored.
 function extractPage() {
   const fallback = {
     url: location.href,

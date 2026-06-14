@@ -165,6 +165,76 @@ func TestClean_HostFallbackWhenNoTitleNoH1(t *testing.T) {
 	}
 }
 
+func TestClean_StripsActiveElements(t *testing.T) {
+	in := []byte(`<html><body>
+		<iframe src="https://evil.example/"></iframe>
+		<object data="x.swf"></object>
+		<embed src="x.swf">
+		<form action="/steal"><input name="x"></form>
+		<p>keep me</p>
+	</body></html>`)
+	out, _, err := Clean(in, "https://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ToLower(string(out))
+	for _, bad := range []string{"<iframe", "<object", "<embed", "<form"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("active element %q not stripped: %s", bad, s)
+		}
+	}
+	if !strings.Contains(s, "<p>keep me</p>") {
+		t.Errorf("prose not preserved: %s", s)
+	}
+}
+
+func TestClean_StripsMetaRefresh(t *testing.T) {
+	in := []byte(`<html><head><meta http-equiv="refresh" content="0;url=javascript:alert(1)"><meta charset="utf-8"></head><body></body></html>`)
+	out, _, err := Clean(in, "https://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ToLower(string(out))
+	if strings.Contains(s, "http-equiv") || strings.Contains(s, "refresh") {
+		t.Errorf("meta refresh not stripped: %s", s)
+	}
+	if !strings.Contains(s, "charset") {
+		t.Errorf("benign meta charset should survive: %s", s)
+	}
+}
+
+func TestClean_NeutralizesDangerousSchemes(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		gone    string // substring that must NOT survive
+		survive string // substring that must survive (empty = skip)
+	}{
+		{"javascript href", `<a href="javascript:alert(1)">x</a>`, "javascript:", ""},
+		{"javascript with whitespace", "<a href=\"java\tscript:alert(1)\">x</a>", "script:alert", ""},
+		{"vbscript href", `<a href="vbscript:msgbox(1)">x</a>`, "vbscript:", ""},
+		{"data text/html", `<a href="data:text/html,<script>alert(1)</script>">x</a>`, "data:text/html", ""},
+		{"entity-encoded js", `<a href="&#106;avascript:alert(1)">x</a>`, "javascript:", ""},
+		{"safe http href", `<a href="https://ok.example/">x</a>`, "", "https://ok.example/"},
+		{"data image allowed", `<img src="data:image/png;base64,AAAA">`, "", "data:image/png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, err := Clean([]byte("<html><body>"+tc.in+"</body></html>"), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := strings.ToLower(string(out))
+			if tc.gone != "" && strings.Contains(s, strings.ToLower(tc.gone)) {
+				t.Errorf("dangerous scheme survived (%q): %s", tc.gone, s)
+			}
+			if tc.survive != "" && !strings.Contains(s, strings.ToLower(tc.survive)) {
+				t.Errorf("safe URL dropped (%q): %s", tc.survive, s)
+			}
+		})
+	}
+}
+
 func TestSlug(t *testing.T) {
 	cases := []struct {
 		in, want string

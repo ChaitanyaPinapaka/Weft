@@ -129,9 +129,36 @@ func WrapVaultKey(vk VaultKey, passphrase string) (KeyFile, error) {
 	return KeyFile{Salt: salt, Wrapped: sealed, MemKiB: argonMemKiB, Time: argonTime, Threads: argonThreads}, nil
 }
 
+// Argon2 parameter bounds for keyfiles read from the (untrusted) bucket. The
+// KDF runs on caller-supplied params *before* the AEAD tag is checked, so a
+// malicious bucket could otherwise set MemKiB to terabytes to OOM-crash a
+// joining device. The ceiling is generous (1 GiB) so future hardening of the
+// pinned params still parses; the floor just rejects degenerate zeros.
+const (
+	maxArgonMemKiB  = 1 << 20 // 1 GiB
+	maxArgonTime    = 16
+	maxArgonThreads = 16
+)
+
+func (kf KeyFile) validateParams() error {
+	if kf.MemKiB == 0 || kf.MemKiB > maxArgonMemKiB {
+		return errors.New("sync: keyfile Argon2 memory out of range")
+	}
+	if kf.Time == 0 || kf.Time > maxArgonTime {
+		return errors.New("sync: keyfile Argon2 time out of range")
+	}
+	if kf.Threads == 0 || kf.Threads > maxArgonThreads {
+		return errors.New("sync: keyfile Argon2 threads out of range")
+	}
+	return nil
+}
+
 // Unwrap recovers the vault key, or errors if the passphrase is wrong.
 func (kf KeyFile) Unwrap(passphrase string) (VaultKey, error) {
 	var vk VaultKey
+	if err := kf.validateParams(); err != nil {
+		return vk, err
+	}
 	kek := argon2.IDKey([]byte(passphrase), kf.Salt, kf.Time, kf.MemKiB, kf.Threads, chacha20poly1305.KeySize)
 	a, err := chacha20poly1305.NewX(kek)
 	if err != nil {
@@ -144,6 +171,9 @@ func (kf KeyFile) Unwrap(passphrase string) (VaultKey, error) {
 	plain, err := a.Open(nil, nonce, sealed, nil)
 	if err != nil {
 		return vk, errors.New("sync: wrong passphrase")
+	}
+	if len(plain) != len(vk) {
+		return vk, errors.New("sync: corrupt keyfile")
 	}
 	copy(vk[:], plain)
 	return vk, nil

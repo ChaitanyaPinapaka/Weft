@@ -99,6 +99,21 @@ func ClipPath(t time.Time, slug string) string {
 // which would re-execute when the saved file is opened locally.
 const dangerousAttrPrefix = "on"
 
+// urlAttrs are attributes whose value is a URL and can therefore smuggle an
+// active scheme (javascript:, data:text/html). We blank those rather than the
+// whole element so legitimate markup survives.
+var urlAttrs = map[string]bool{
+	"href":       true,
+	"src":        true,
+	"srcset":     true,
+	"action":     true,
+	"formaction": true,
+	"xlink:href": true,
+	"data":       true,
+	"poster":     true,
+	"background": true,
+}
+
 func stripDangerous(n *html.Node) {
 	// Walk depth-first, collecting nodes to remove so we don't mutate the
 	// sibling list while iterating it.
@@ -106,17 +121,11 @@ func stripDangerous(n *html.Node) {
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
-			switch n.DataAtom {
-			case atom.Script, atom.Noscript:
+			if isDangerousElement(n) {
 				toRemove = append(toRemove, n)
 				return
-			case atom.Link:
-				if isPreloadScript(n) {
-					toRemove = append(toRemove, n)
-					return
-				}
 			}
-			n.Attr = stripEventHandlers(n.Attr)
+			n.Attr = sanitizeAttrs(n.Attr)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			walk(c)
@@ -128,6 +137,23 @@ func stripDangerous(n *html.Node) {
 			node.Parent.RemoveChild(node)
 		}
 	}
+}
+
+// isDangerousElement reports elements that can execute script or hijack
+// navigation when the saved note is rendered same-origin (localhost:7777) or
+// opened locally. <style> is intentionally kept — modern browsers do not run
+// script from CSS, and dropping it would wreck clip fidelity.
+func isDangerousElement(n *html.Node) bool {
+	switch n.DataAtom {
+	case atom.Script, atom.Noscript, atom.Iframe, atom.Object,
+		atom.Embed, atom.Applet, atom.Form, atom.Frame, atom.Frameset:
+		return true
+	case atom.Link:
+		return isPreloadScript(n)
+	case atom.Meta:
+		return isMetaRefresh(n)
+	}
+	return false
 }
 
 func isPreloadScript(n *html.Node) bool {
@@ -143,15 +169,55 @@ func isPreloadScript(n *html.Node) bool {
 	return rel == "preload" && as == "script"
 }
 
-func stripEventHandlers(attrs []html.Attribute) []html.Attribute {
+// isMetaRefresh flags <meta http-equiv="refresh">, which can bounce the page to
+// a javascript:/external URL the moment it renders.
+func isMetaRefresh(n *html.Node) bool {
+	for _, a := range n.Attr {
+		if strings.EqualFold(a.Key, "http-equiv") &&
+			strings.EqualFold(strings.TrimSpace(a.Val), "refresh") {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeAttrs(attrs []html.Attribute) []html.Attribute {
 	out := attrs[:0]
 	for _, a := range attrs {
-		if strings.HasPrefix(strings.ToLower(a.Key), dangerousAttrPrefix) && len(a.Key) > 2 {
+		key := strings.ToLower(a.Key)
+		// Drop inline event handlers (onclick, onload, …).
+		if strings.HasPrefix(key, dangerousAttrPrefix) && len(key) > 2 {
+			continue
+		}
+		// Drop URL attributes carrying an active scheme.
+		if urlAttrs[key] && hasDangerousScheme(a.Val) {
 			continue
 		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// hasDangerousScheme reports whether a URL value resolves to a script-bearing
+// scheme. The html parser has already decoded entities in the attribute value;
+// browsers further ignore leading/embedded ASCII whitespace and control chars
+// when picking the scheme, so we strip those before testing. data: is allowed
+// only for images (common, inert); data:text/html and friends are rejected.
+func hasDangerousScheme(val string) bool {
+	v := strings.Map(func(r rune) rune {
+		if r <= 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, val)
+	v = strings.ToLower(v)
+	switch {
+	case strings.HasPrefix(v, "javascript:"), strings.HasPrefix(v, "vbscript:"):
+		return true
+	case strings.HasPrefix(v, "data:") && !strings.HasPrefix(v, "data:image/"):
+		return true
+	}
+	return false
 }
 
 func findFirst(n *html.Node, a atom.Atom) *html.Node {

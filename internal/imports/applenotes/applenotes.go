@@ -101,7 +101,7 @@ func importOne(srcRoot, notePath string, v *vault.Vault, opts Options, rpt *Repo
 	// directory is the resolution base; assets land alongside the destination.
 	srcDir := filepath.Dir(notePath)
 	destDirAbs := filepath.Join(v.Root, "apple-notes", subdir)
-	rewriteAssets(doc, srcDir, destDirAbs)
+	rewriteAssets(doc, srcRoot, srcDir, destDirAbs)
 
 	var buf bytes.Buffer
 	if err := html.Render(&buf, doc); err != nil {
@@ -201,7 +201,7 @@ func slugify(s string) string {
 // them to destDir, and rewrites the reference to a relative path. Absolute
 // URLs (with scheme) and fragments are left alone. Missing files are left
 // as-is; the broken link is preserved rather than silently dropped.
-func rewriteAssets(doc *html.Node, srcDir, destDir string) {
+func rewriteAssets(doc *html.Node, srcRoot, srcDir, destDir string) {
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
@@ -217,7 +217,7 @@ func rewriteAssets(doc *html.Node, srcDir, destDir string) {
 					if a.Key != attr {
 						continue
 					}
-					if newVal, ok := copyAssetRef(a.Val, srcDir, destDir); ok {
+					if newVal, ok := copyAssetRef(a.Val, srcRoot, srcDir, destDir); ok {
 						n.Attr[i].Val = newVal
 					}
 				}
@@ -230,7 +230,7 @@ func rewriteAssets(doc *html.Node, srcDir, destDir string) {
 	walk(doc)
 }
 
-func copyAssetRef(ref, srcDir, destDir string) (string, bool) {
+func copyAssetRef(ref, srcRoot, srcDir, destDir string) (string, bool) {
 	if ref == "" {
 		return "", false
 	}
@@ -254,7 +254,21 @@ func copyAssetRef(ref, srcDir, destDir string) (string, bool) {
 		return "", false
 	}
 	srcAsset := filepath.Join(srcDir, filepath.FromSlash(decodedPath))
-	info, err := os.Stat(srcAsset)
+	// Refuse anything that escapes the export root — a malicious export can carry
+	// an href/src of "../../../../etc/passwd" to read arbitrary user-readable
+	// files into the vault. Mirrors the markdown importer's containment check.
+	srcAssetAbs, err := filepath.Abs(srcAsset)
+	if err != nil {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(srcRoot)
+	if err != nil {
+		return "", false
+	}
+	if srcAssetAbs != rootAbs && !strings.HasPrefix(srcAssetAbs, rootAbs+string(filepath.Separator)) {
+		return "", false
+	}
+	info, err := os.Stat(srcAssetAbs)
 	if err != nil || info.IsDir() {
 		return "", false
 	}

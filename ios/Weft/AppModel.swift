@@ -238,8 +238,16 @@ final class AppModel {
     /// Each is appended to the daily note, then its queue file is removed (queue
     /// files are not vault notes; deleting them is fine). No-ops cleanly when
     /// the app group container is unavailable or the inbox is empty.
+    /// Guards drainInbox against reentrancy: boot() and the scenePhase handler
+    /// can both call it, and it suspends at `core.capture` before deleting the
+    /// queue file — without this flag the two runs ingest the same capture twice.
+    private var draining = false
+
     func drainInbox() async {
         guard let core else { return }
+        if draining { return }
+        draining = true
+        defer { draining = false }
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else { return }
         let inbox = container.appendingPathComponent("inbox", isDirectory: true)

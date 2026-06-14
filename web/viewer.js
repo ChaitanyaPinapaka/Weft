@@ -106,10 +106,43 @@
     }
   }
 
+  // Strip active content from an inert (DOMParser) document before we adopt it
+  // into the live page. The viewer renders note bodies via innerHTML on the
+  // trusted localhost:7777 origin, so anything that survived ingestion (synced
+  // notes, imports authored elsewhere) must be neutralized here. Operating on
+  // the parsed-but-inert DOM is reliable — no scripts have run and no resources
+  // have loaded yet. Mirrors the server-side clip sanitizer.
+  const DANGEROUS_TAGS = ['script', 'iframe', 'object', 'embed', 'applet',
+    'form', 'frame', 'frameset', 'meta', 'link', 'base'];
+  const URL_ATTRS = ['href', 'src', 'srcset', 'action', 'formaction',
+    'xlink:href', 'data', 'poster', 'background'];
+  function isDangerousScheme(val) {
+    // Browsers ignore leading/embedded ASCII whitespace + control chars when
+    // resolving a scheme; entities are already decoded in parsed attributes.
+    const v = (val || '').replace(/[\x00-\x20\x7f]/g, '').toLowerCase();
+    return v.startsWith('javascript:') || v.startsWith('vbscript:') ||
+      (v.startsWith('data:') && !v.startsWith('data:image/'));
+  }
+  function sanitize(root) {
+    for (const el of root.querySelectorAll(DANGEROUS_TAGS.join(','))) {
+      el.remove();
+    }
+    for (const el of root.querySelectorAll('*')) {
+      for (const attr of [...el.attributes]) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on')) { el.removeAttribute(attr.name); continue; }
+        if (URL_ATTRS.includes(name) && isDangerousScheme(attr.value)) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    }
+  }
+
   function hydrate(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const article = doc.querySelector('article');
     const root = article || doc.body;
+    sanitize(root);
 
     const h1 = root.querySelector('h1');
     if (h1) {

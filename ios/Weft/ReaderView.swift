@@ -13,7 +13,11 @@ struct ReaderView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onNavigate: onNavigate) }
 
     func makeUIView(context: Context) -> WKWebView {
-        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // Static note rendering only — no scripting. Disabling JS neutralizes
+        // any active content that arrived via sync from another device.
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
+        let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
         web.isOpaque = false
         web.backgroundColor = .clear

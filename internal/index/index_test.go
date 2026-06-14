@@ -66,6 +66,41 @@ func TestUpsertAndSearch(t *testing.T) {
 	}
 }
 
+func TestSearchHandlesFTSMetacharacters(t *testing.T) {
+	// Raw queries used to be passed straight to MATCH, so ordinary input with
+	// FTS5 operator chars raised a syntax error (surfaced as HTTP 500). These
+	// must now search literally and never error.
+	ix := newIndex(t)
+	now := time.Now()
+	if err := ix.Upsert(Note{Path: "a.html", Title: "C++ and email", Body: "learning C++ and foo:bar and a@b.com", ModTime: now, Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"C++", "foo:bar", "a@b.com", `"`, "(", "*", "AND OR", "  "} {
+		if _, err := ix.Search(q, 10); err != nil {
+			t.Errorf("Search(%q) errored: %v", q, err)
+		}
+	}
+	// A real term still matches.
+	if hits, err := ix.Search("learning", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("expected 1 hit for 'learning', got %d (err %v)", len(hits), err)
+	}
+}
+
+func TestFTSMatchQuery(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"hello world", `"hello" "world"`},
+		{"C++", `"C++"`},
+		{`say "hi"`, `"say" """hi"""`},
+		{"   ", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := ftsMatchQuery(tc.in); got != tc.want {
+			t.Errorf("ftsMatchQuery(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestBacklinksRoundTrip(t *testing.T) {
 	ix := newIndex(t)
 	now := time.Now()

@@ -22,7 +22,12 @@ struct ReaderView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onNavigate: onNavigate) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // The reader only renders static note HTML — it needs no scripting.
+        // Disabling JS neutralizes any active content that reached the vault
+        // via sync from another device (decrypted bytes are written verbatim).
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
+        let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = false
         // Hand the model a reference so it can drive the editor's save/stop
