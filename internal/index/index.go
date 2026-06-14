@@ -598,6 +598,27 @@ func (ix *Index) NotesWithTag(tag string) ([]string, error) {
 	return ix.queryStrings(`SELECT path FROM tags WHERE tag = ? ORDER BY path`, tag)
 }
 
+// AllTagsByPath returns every note's tags keyed by path (notes with no tags are
+// absent), each tag list sorted ascending. One scan of the tags table — the
+// batch-load companion to AllAccessHistory, for callers (e.g. graph.Build) that
+// need every note's tags at once without an N+1 of NotesWithTag.
+func (ix *Index) AllTagsByPath() (map[string][]string, error) {
+	rows, err := ix.db.Query(`SELECT path, tag FROM tags ORDER BY path, tag ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var p, tag string
+		if err := rows.Scan(&p, &tag); err != nil {
+			return nil, err
+		}
+		out[p] = append(out[p], tag)
+	}
+	return out, rows.Err()
+}
+
 func (ix *Index) queryStrings(q, arg string) ([]string, error) {
 	rows, err := ix.db.Query(q, arg)
 	if err != nil {

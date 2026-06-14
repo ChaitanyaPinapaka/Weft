@@ -10,6 +10,8 @@ import { Editor, Extension } from 'https://esm.sh/@tiptap/core@2';
 import StarterKit    from 'https://esm.sh/@tiptap/starter-kit@2';
 import Link          from 'https://esm.sh/@tiptap/extension-link@2';
 import Placeholder   from 'https://esm.sh/@tiptap/extension-placeholder@2';
+import TaskList      from 'https://esm.sh/@tiptap/extension-task-list@2';
+import TaskItem      from 'https://esm.sh/@tiptap/extension-task-item@2';
 import Suggestion    from 'https://esm.sh/@tiptap/suggestion@2';
 
 const params = new URLSearchParams(location.search);
@@ -116,11 +118,27 @@ function loadNotes() {
 }
 loadNotes();
 
+// Default row renderer for the wikilink dropdown: a note Name over its Path.
+function renderWikiRow(it, row) {
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = it.Name;
+  const path = document.createElement('span');
+  path.className = 'path';
+  path.textContent = it.Path;
+  row.appendChild(name);
+  row.appendChild(path);
+}
+
 // Vanilla dropdown renderer. The Suggestion plugin owns state (range,
 // selectedIndex, items); this just paints and positions DOM. Why no popper
 // lib: coordsAtPos already gives us viewport-relative coords; that's enough
-// for a v0.3 dropdown.
-function createSuggestionUI() {
+// for a v0.3 dropdown. Parameterised by a per-row painter and empty label so
+// the slash menu can reuse the exact same popup styling and keyboard handling.
+function createSuggestionUI(opts) {
+  const renderItem = (opts && opts.renderItem) || renderWikiRow;
+  const emptyText  = (opts && opts.emptyText)  || 'no matches';
+  const rootClass  = 'wiki-suggestions' + (opts && opts.extraClass ? ' ' + opts.extraClass : '');
   let root = null;
   let items = [];
   let selectedIndex = 0;
@@ -129,7 +147,7 @@ function createSuggestionUI() {
   function ensureRoot() {
     if (root) return root;
     root = document.createElement('div');
-    root.className = 'wiki-suggestions';
+    root.className = rootClass;
     root.hidden = true;
     document.body.appendChild(root);
     return root;
@@ -141,26 +159,23 @@ function createSuggestionUI() {
     if (!items.length) {
       const empty = document.createElement('div');
       empty.className = 'wiki-suggestion is-empty';
-      empty.textContent = 'no matches';
+      empty.textContent = emptyText;
       root.appendChild(empty);
       return;
     }
     items.forEach((it, i) => {
       const row = document.createElement('div');
       row.className = 'wiki-suggestion' + (i === selectedIndex ? ' is-selected' : '');
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = it.Name;
-      const path = document.createElement('span');
-      path.className = 'path';
-      path.textContent = it.Path;
-      row.appendChild(name);
-      row.appendChild(path);
+      renderItem(it, row);
       // mousedown (not click) so the editor doesn't blur first and cancel.
       row.addEventListener('mousedown', e => {
         e.preventDefault();
         selectedIndex = i;
         if (commandFn) commandFn(items[i]);
+      });
+      // Keep the hovered row in sync with keyboard selection.
+      row.addEventListener('mousemove', () => {
+        if (selectedIndex !== i) { selectedIndex = i; render(); }
       });
       root.appendChild(row);
     });
@@ -267,7 +282,11 @@ const WikilinkSuggestion = Extension.create({
               {
                 type: 'text',
                 text: name,
-                marks: [{ type: 'link', attrs: { href } }],
+                // class:'wiki-chip' rides on the link mark so the anchor
+                // serializes as <a class="wiki-chip" href> — the chip styling is
+                // pure CSS and the server-side wikilink pass still sees a normal
+                // <a href>, so the save/expand round-trip is unchanged.
+                marks: [{ type: 'link', attrs: { href, class: 'wiki-chip' } }],
               },
               { type: 'text', text: ' ' },
             ])
@@ -290,9 +309,217 @@ const WikilinkSuggestion = Extension.create({
   },
 });
 
+// ---- Slash menu ------------------------------------------------------------
+// Typing '/' at the start of an empty line opens a block-insertion menu. It
+// reuses the same @tiptap/suggestion plumbing and dropdown UI as the wikilink
+// autocomplete, so the keyboard handling (↑/↓/Enter/Esc) and popup styling are
+// identical — one mental model, one stylesheet.
+//
+// Each command receives the chain pre-focused; `deleteRange(range)` first
+// removes the typed "/query" so the slash text never lands in the document.
+const SLASH_COMMANDS = [
+  { title: 'Heading 1',     hint: '#',   keywords: 'h1 title big',
+    run: c => c.toggleHeading({ level: 1 }) },
+  { title: 'Heading 2',     hint: '##',  keywords: 'h2',
+    run: c => c.toggleHeading({ level: 2 }) },
+  { title: 'Heading 3',     hint: '###', keywords: 'h3',
+    run: c => c.toggleHeading({ level: 3 }) },
+  { title: 'Bullet list',   hint: '•',   keywords: 'unordered ul bullets',
+    run: c => c.toggleBulletList() },
+  { title: 'Numbered list', hint: '1.',  keywords: 'ordered ol numbers',
+    run: c => c.toggleOrderedList() },
+  { title: 'Task list',     hint: '☐',   keywords: 'todo checkbox check',
+    run: c => c.toggleTaskList() },
+  { title: 'Code block',    hint: '</>', keywords: 'code pre monospace',
+    run: c => c.toggleCodeBlock() },
+  { title: 'Quote',         hint: '"',   keywords: 'blockquote citation',
+    run: c => c.toggleBlockquote() },
+  { title: 'Divider',       hint: '—',   keywords: 'hr rule horizontal separator',
+    run: c => c.setHorizontalRule() },
+  // Wikilink: drop the literal '[[' so the existing wikilink Suggestion takes
+  // over from here — no duplicated note-picker logic.
+  { title: 'Wikilink',      hint: '[[',  keywords: 'link note reference wiki',
+    run: c => c.insertContent('[[') },
+];
+
+function renderSlashRow(it, row) {
+  const hint = document.createElement('span');
+  hint.className = 'slash-hint';
+  hint.textContent = it.hint;
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = it.title;
+  row.appendChild(hint);
+  row.appendChild(name);
+}
+
+const SlashCommands = Extension.create({
+  name: 'slashCommands',
+  addOptions() {
+    return {
+      suggestion: {
+        char: '/',
+        // Only fire when the '/' is the first character of a paragraph — a '/'
+        // mid-word (e.g. "and/or", a URL) must stay literal. We check the
+        // trigger position (range.from), NOT node emptiness, because the query
+        // text ("/heading") legitimately fills the block once typing starts.
+        startOfLine: true,
+        allow: ({ state, range }) => {
+          const $from = state.doc.resolve(range.from);
+          return $from.parentOffset === 0 && $from.parent.type.name === 'paragraph';
+        },
+        items: ({ query }) => {
+          const q = (query || '').toLowerCase();
+          if (!q) return SLASH_COMMANDS;
+          return SLASH_COMMANDS.filter(c =>
+            c.title.toLowerCase().includes(q) ||
+            (c.keywords || '').includes(q));
+        },
+        command: ({ editor, range, props }) => {
+          // Strip the typed "/query" first, then run the block command on the
+          // now-empty line in a single chain so undo treats it as one step.
+          props.run(editor.chain().focus().deleteRange(range)).run();
+        },
+        render: () => {
+          const ui = createSuggestionUI({
+            renderItem: renderSlashRow,
+            emptyText: 'no commands',
+            extraClass: 'slash-suggestions',
+          });
+          return {
+            onStart:   ui.onStart,
+            onUpdate:  ui.onUpdate,
+            onKeyDown: ui.onKeyDown,
+            onExit:    ui.onExit,
+          };
+        },
+      },
+    };
+  },
+  addProseMirrorPlugins() {
+    return [Suggestion({ editor: this.editor, ...this.options.suggestion })];
+  },
+});
+
+// ---- Bubble menu -----------------------------------------------------------
+// A floating toolbar that appears over a non-empty text selection. We build the
+// DOM and own its show/hide + positioning ourselves (bar._update, via
+// coordsAtPos) rather than pulling in @tiptap/extension-bubble-menu — that
+// extension drags in tippy, which threw during editor construction and left the
+// note blank. Each button reflects the mark/node active state.
+function buildBubbleMenu(getEditor) {
+  const bar = document.createElement('div');
+  bar.className = 'bubble-menu';
+
+  // [label, isActive(editor) → bool, run(chain) → chain, title]
+  const BUTTONS = [
+    { label: 'B',  className: 'is-bold',   title: 'Bold (⌘B)',
+      active: e => e.isActive('bold'),
+      run:    c => c.toggleBold() },
+    { label: 'I',  className: 'is-italic', title: 'Italic (⌘I)',
+      active: e => e.isActive('italic'),
+      run:    c => c.toggleItalic() },
+    { label: '<>', className: 'is-code',   title: 'Inline code',
+      active: e => e.isActive('code'),
+      run:    c => c.toggleCode() },
+    { label: '↗',  className: 'is-link',   title: 'Link',
+      active: e => e.isActive('link'),
+      // The link button prompts for a URL rather than running a plain chain.
+      link: true },
+    { sep: true },
+    { label: 'H1', title: 'Heading 1',
+      active: e => e.isActive('heading', { level: 1 }),
+      run:    c => c.toggleHeading({ level: 1 }) },
+    { label: 'H2', title: 'Heading 2',
+      active: e => e.isActive('heading', { level: 2 }),
+      run:    c => c.toggleHeading({ level: 2 }) },
+    { sep: true },
+    { label: '•',  title: 'Bullet list',
+      active: e => e.isActive('bulletList'),
+      run:    c => c.toggleBulletList() },
+    { label: '1.', title: 'Numbered list',
+      active: e => e.isActive('orderedList'),
+      run:    c => c.toggleOrderedList() },
+  ];
+
+  const refreshers = [];
+  for (const b of BUTTONS) {
+    if (b.sep) {
+      const sep = document.createElement('span');
+      sep.className = 'bubble-sep';
+      bar.appendChild(sep);
+      continue;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bubble-btn' + (b.className ? ' ' + b.className : '');
+    btn.textContent = b.label;
+    btn.title = b.title;
+    btn.addEventListener('mousedown', e => {
+      // mousedown + preventDefault so the editor selection isn't lost on click.
+      e.preventDefault();
+      const editor = getEditor();
+      if (!editor) return;
+      if (b.link) { toggleLinkPrompt(editor); return; }
+      b.run(editor.chain().focus()).run();
+    });
+    bar.appendChild(btn);
+    if (b.active) refreshers.push(() => {
+      const editor = getEditor();
+      btn.classList.toggle('is-active', !!(editor && b.active(editor)));
+    });
+  }
+
+  bar._refresh = () => { for (const r of refreshers) r(); };
+
+  // Show/position manually over a non-empty text selection — no popper/tippy,
+  // matching the wikilink dropdown's coordsAtPos approach (the official
+  // BubbleMenu extension dragged in tippy, which broke editor construction).
+  bar._update = (editor) => {
+    if (!editor || !editor.isEditable) { bar.style.display = 'none'; return; }
+    const { from, to, empty } = editor.state.selection;
+    if (empty) { bar.style.display = 'none'; return; }
+    bar._refresh();
+    bar.style.display = 'flex';
+    const start = editor.view.coordsAtPos(from);
+    const end   = editor.view.coordsAtPos(to);
+    const rect  = bar.getBoundingClientRect();
+    const mid   = (Math.min(start.left, end.left) + Math.max(start.right, end.right)) / 2;
+    let left = Math.max(8, Math.min(mid - rect.width / 2, window.innerWidth - rect.width - 8));
+    let top  = start.top - rect.height - 8;       // above the selection…
+    if (top < 8) top = end.bottom + 8;            // …or below if there's no room
+    bar.style.left = left + 'px';
+    bar.style.top  = top + 'px';
+  };
+
+  bar.style.display = 'none';
+  document.body.appendChild(bar);
+  return bar;
+}
+
+// Link button: toggle off if already a link, else prompt for a URL. Kept as a
+// plain window.prompt — boring beats a custom mini-form for a v0.3 affordance.
+function toggleLinkPrompt(editor) {
+  if (editor.isActive('link')) {
+    editor.chain().focus().unsetLink().run();
+    return;
+  }
+  const prev = editor.getAttributes('link').href || '';
+  const url = window.prompt('Link URL', prev);
+  if (url === null) return;            // cancelled
+  if (url === '') { editor.chain().focus().unsetLink().run(); return; }
+  editor.chain().focus().setLink({ href: url }).run();
+}
+
 // ---- TipTap ----------------------------------------------------------------
 
-const editor = new Editor({
+// Forward reference: the bubble-menu buttons need the editor, but the editor
+// needs the bubble element. We build the element first with a getter closure,
+// then assign `editor` below.
+let editor = null;
+const bubbleEl = buildBubbleMenu(() => editor);
+
+editor = new Editor({
   element: document.getElementById('editor'),
   extensions: [
     StarterKit,
@@ -301,6 +528,8 @@ const editor = new Editor({
       autolink: true,
       HTMLAttributes: { rel: 'noopener noreferrer' },
     }),
+    TaskList,
+    TaskItem.configure({ nested: true }),
     Placeholder.configure({
       // Show "Untitled" on the first empty heading, "Write…" elsewhere — so
       // a brand-new document looks like a titled note rather than a blank slab.
@@ -311,14 +540,34 @@ const editor = new Editor({
       showOnlyWhenEditable: true,
     }),
     WikilinkSuggestion,
+    SlashCommands,
   ],
   content: '',
   autofocus: false,
   onUpdate: () => {
     if (loading) return;
     scheduleSave();
+    updateCounts();
   },
+  // Position + show/hide the bubble toolbar (and refresh its active states) on
+  // every selection / doc change; hide it when focus leaves the editor.
+  onSelectionUpdate: () => bubbleEl._update(editor),
+  onTransaction:     () => bubbleEl._update(editor),
+  onBlur:            () => { bubbleEl.style.display = 'none'; },
 });
+
+// ---- Word / char count -----------------------------------------------------
+// Live counter in the editor footer. We read editor.getText() rather than add
+// the @tiptap/extension-character-count dependency: the doc is small, this runs
+// only on update, and it keeps the import list lean.
+const countEl = document.getElementById('count');
+function updateCounts() {
+  if (!countEl) return;
+  const text = editor.getText().trim();
+  const chars = text.length;
+  const words = text ? text.split(/\s+/).length : 0;
+  countEl.textContent = words + (words === 1 ? ' word' : ' words') + ' · ' + chars + ' chars';
+}
 
 function firstH1Text() {
   // Walk the prose-mirror doc for the first level-1 heading, fallback to path.
@@ -702,4 +951,4 @@ async function loadSurface() {
   }
 }
 
-load().then(loadSurface);
+load().then(() => { updateCounts(); return loadSurface(); });

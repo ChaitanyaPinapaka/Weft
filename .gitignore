@@ -12,3 +12,5 @@ ios/Frameworks/
 ios/Weft.xcodeproj/
 WeftKit/.build/
 WeftKit/.swiftpm/
+.wrangler/
+.claude/settings.local.json

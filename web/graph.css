@@ -1,6 +1,8 @@
-/* Graph view — force-directed node-link diagram over the vault.
-   Shares the site palette so the chrome reads as part of Weft, not a sidecar.
-   SVG fills the viewport below the header; controls + tooltip float over it. */
+/* Graph view — a memory-map over the vault, not a generic node-link chart.
+   Nodes are colored by folder (cluster hue), sized + brightened by activation;
+   backlink edges are solid, semantic edges faint + dashed. Dark-friendly since
+   the macOS app may host this surface. Shares the site palette so the chrome
+   reads as part of Weft. */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -13,6 +15,12 @@
   --accent:  #2563eb;
   --radius:  6px;
   --header-h: 56px;
+  /* Edge inks tuned per theme so semantic dashes stay legible without
+     fighting the nodes for attention. */
+  --edge:        #9aa0a8;
+  --edge-sem:    #b08bd6;
+  --label-text:  #1a1a1a;
+  --label-halo:  #fafafa;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -22,6 +30,10 @@
     --text:    #e8e8e8;
     --muted:   #666;
     --accent:  #60a5fa;
+    --edge:        #4a4f57;
+    --edge-sem:    #7c6f9c;
+    --label-text:  #e8e8e8;
+    --label-halo:  #0f0f0f;
   }
 }
 
@@ -73,6 +85,7 @@ header .status.offline { color: #c0392b; }
   header .status.offline { color: #ff7a6e; }
 }
 
+/* --- controls -------------------------------------------------------------- */
 .controls {
   position: absolute;
   top: calc(var(--header-h) + 12px);
@@ -84,11 +97,13 @@ header .status.offline { color: #c0392b; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
   z-index: 10;
   font-size: 0.82rem;
 }
 .control { display: flex; align-items: center; gap: 6px; }
+.control-check { cursor: pointer; }
+.control-check input { accent-color: var(--accent); cursor: pointer; }
 .control-label {
   color: var(--muted);
   font-family: ui-monospace, monospace;
@@ -126,6 +141,97 @@ header .status.offline { color: #c0392b; }
   margin-left: 4px;
 }
 
+/* --- legend ---------------------------------------------------------------- */
+.legend {
+  position: absolute;
+  top: calc(var(--header-h) + 12px);
+  right: 16px;
+  width: 200px;
+  max-height: calc(100vh - var(--header-h) - 40px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+  z-index: 10;
+  overflow: hidden;
+}
+.legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.legend-title {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.legend-clear {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0;
+}
+.legend-clear:hover { text-decoration: underline; }
+.legend-items {
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 100ms ease, opacity 100ms ease;
+}
+.legend-item:hover { background: var(--bg); }
+/* When a folder is isolated, non-selected legend rows fade to signal the
+   active filter — the legend doubles as filter state. */
+.legend-items .legend-item.active { opacity: 0.4; }
+.legend-items .legend-item.selected { opacity: 1; background: var(--bg); }
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.12) inset;
+}
+.legend-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.74rem;
+}
+.legend-count {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  flex-shrink: 0;
+}
+
+/* --- canvas + minimap ------------------------------------------------------ */
 #graph {
   display: block;
   width: 100vw;
@@ -135,30 +241,85 @@ header .status.offline { color: #c0392b; }
 }
 #graph:active { cursor: grabbing; }
 
-/* Edges + nodes — opacity is the primary focus signal so we can dim
-   everything cheaply without re-running the simulation. */
-.edge {
-  stroke: var(--muted);
-  stroke-opacity: 0.25;
-  stroke-width: 1px;
+.minimap {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 180px;
+  height: 120px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+  z-index: 9;
+  opacity: 0.92;
   pointer-events: none;
 }
+
+/* --- edges ----------------------------------------------------------------- */
+/* Two classes. Backlinks are solid structural citations; semantic edges are
+   faint dashed associations whose opacity the JS scales by cosine weight. */
+.edge {
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.edge.backlink {
+  stroke: var(--edge);
+  stroke-opacity: 0.35;
+  stroke-width: 1.1px;
+}
+.edge.semantic {
+  stroke: var(--edge-sem);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+  /* stroke-opacity set inline per weight by graph.js */
+}
+
+/* --- nodes ----------------------------------------------------------------- */
+/* Fill + fill-opacity are set per-node in JS (folder hue, activation warmth).
+   The stroke ring reads against the background; hover thickens it. */
 .node {
-  fill: var(--accent);
   stroke: var(--bg);
   stroke-width: 1.5px;
   cursor: pointer;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, stroke-width 100ms ease;
 }
 .node:hover { stroke: var(--text); stroke-width: 2px; }
 .node.pinned { stroke: var(--text); stroke-dasharray: 2 2; }
+.node.primary { stroke: var(--accent); stroke-width: 2.5px; }
 
-/* Focus mode: a class on the <svg> toggles dimming. Highlighted nodes/edges
-   get an explicit class that overrides the dim. CSS-only because re-styling
-   2000 elements through D3 attr is slower than a single class flip. */
-.focused .node, .focused .edge { opacity: 0.1; }
+/* --- labels ---------------------------------------------------------------- */
+/* A paint-order halo keeps text legible over edges and node fills without an
+   extra DOM layer. Always-on labels name hubs/hot notes; the rest appear when
+   zoomed in or highlighted. */
+.node-label {
+  fill: var(--label-text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: 500;
+  paint-order: stroke;
+  stroke: var(--label-halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.node-label.always { opacity: 0.92; }
+/* Once zoomed past the threshold, reveal every label. */
+.labels.zoomed-in .node-label { opacity: 0.9; }
+/* Highlighted (hover/focus neighborhood) labels always show, on top. */
+.node-label.hl { opacity: 1; }
+
+/* --- focus / hover dimming ------------------------------------------------- */
+/* A class on the <svg> toggles dimming; highlighted elements override it.
+   CSS-only because re-styling thousands of elements via D3 attr is slower
+   than one class flip. */
+.focused .node, .focused .edge { opacity: 0.08; }
+.focused .node-label:not(.hl) { opacity: 0; }
 .focused .node.hl, .focused .edge.hl { opacity: 1; }
+.focused .node-label.hl { opacity: 1; }
 
+/* --- tooltip --------------------------------------------------------------- */
 .tooltip {
   position: absolute;
   pointer-events: none;
@@ -168,7 +329,7 @@ header .status.offline { color: #c0392b; }
   border-radius: var(--radius);
   padding: 6px 10px;
   font-size: 0.82rem;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
   z-index: 20;
   max-width: 280px;
 }
@@ -187,6 +348,7 @@ header .status.offline { color: #c0392b; }
   margin-top: 4px;
 }
 
+/* --- overlay --------------------------------------------------------------- */
 .empty {
   position: absolute;
   top: 50%;

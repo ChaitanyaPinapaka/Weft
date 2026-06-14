@@ -2,33 +2,15 @@ import SwiftUI
 import WebKit
 import WeftKit
 
-// The vault graph: a separate window hosting the daemon's /graph page (the D3
-// force layout) in a WKWebView. A node's second click navigates the page to
-// /note/{path}; we intercept that and open the note in the app's reader instead
-// of letting the viewer load inside the webview.
-struct GraphWindow: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        GraphWebView { path in
-            model.open(path: path)
-            raiseReaderWindow()
-        }
-        .navigationTitle("Graph")
-        .background(Weft.bg.ignoresSafeArea())
-        .frame(minWidth: 640, minHeight: 480)
-    }
-
-    // The note opens in the main window's reader; bring that window forward so
-    // the navigation is visible (mirrors MenuBarView's "Open Weft").
-    private func raiseReaderWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows
-            .first { $0.canBecomeMain && !($0 is NSPanel) && $0.title != "Graph" }?
-            .makeKeyAndOrderFront(nil)
-    }
-}
-
+// The vault graph, hosted in the main window's detail pane (RootView swaps it in
+// for the reader when model.showGraph is true). A WKWebView renders the daemon's
+// /web/graph.html — the D3 force layout. A node's click navigates the page to
+// /note/{path}; we intercept that and call model.open(path:), which opens the
+// note and clears showGraph, dropping you onto that note in the same reader.
+//
+// This is a distinct view instance from the reader's WKWebView, so the two never
+// fight over a shared web view. The graph reloads fresh each time it appears, so
+// it always reflects the daemon's latest (enriched) payload.
 struct GraphWebView: NSViewRepresentable {
     let onOpen: (String) -> Void
 

@@ -23,6 +23,12 @@ final class AppModel {
     // navigation: following a link while editing edits the target.
     var editing = false
 
+    // Reader/graph toggle. While true the detail pane swaps the reader for the
+    // vault graph (a WKWebView on /web/graph.html) in the SAME window; the
+    // reader/sidebar/brain state is preserved underneath. Clicking a node opens
+    // that note, which drops back to the reader (open(path:) clears this).
+    var showGraph = false
+
     // Path staged for trashing; RootView's confirm alert completes or cancels.
     var pendingTrash: String?
 
@@ -86,7 +92,27 @@ final class AppModel {
 
     // MARK: - Navigation
 
+    /// Toggle the vault graph. Showing it tears down the reader's editor
+    /// WKWebView, which never fires the editor's beforeunload/sendBeacon on
+    /// programmatic teardown — so when editing we must flush the pending save
+    /// first (mirroring finishEditing's Done path) or the last ~1s of edits are
+    /// lost. Hiding the graph is a plain toggle.
+    func toggleGraph() {
+        // Switching INTO the graph while editing: flush first, then show.
+        if !showGraph && editing {
+            Task {
+                await flushEditor() // returns only once the final save has landed
+                showGraph = true
+            }
+            return
+        }
+        showGraph.toggle()
+    }
+
     func open(path: String) {
+        // Opening a note always drops back to the reader — a graph node click
+        // lands you on that note in the same window.
+        showGraph = false
         guard path != currentPath || doc == nil else { return }
         currentPath = path
         loading = true

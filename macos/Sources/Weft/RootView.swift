@@ -7,9 +7,11 @@ import WeftKit
 // over the reader.
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
     @State private var showBrain = true
     @State private var showInbox = false
+    // Bumped each time the graph is shown so its WKWebView is rebuilt and reloads
+    // /web/graph.html fresh — always reflecting the daemon's latest payload.
+    @State private var graphReload = 0
 
     var body: some View {
         @Bindable var model = model
@@ -28,6 +30,9 @@ struct RootView: View {
                 .toolbar { toolbar }
         }
         .navigationTitle(model.doc?.title ?? "Weft")
+        // Bump on every show (toolbar button or ⌘⇧G) so the graph WKWebView is
+        // rebuilt and reloads /web/graph.html fresh.
+        .onChange(of: model.showGraph) { _, shown in if shown { graphReload &+= 1 } }
         .sheet(isPresented: $model.showSetup) { SetupView().environment(model) }
         .sheet(isPresented: $model.showAddDevice) { AddDeviceView() }
         // Trash confirmation — same never-delete wording as the web viewer.
@@ -72,9 +77,16 @@ struct RootView: View {
     private var readerPane: some View {
         ZStack(alignment: .bottomTrailing) {
             Weft.bg.ignoresSafeArea()
-            ReaderView(doc: model.doc, editing: model.editing,
-                       onWebView: { model.activeWebView = $0 }) { path in
-                model.open(path: path)
+            if model.showGraph {
+                // The graph is a distinct WKWebView from the reader's, so the two
+                // never fight. .id forces a rebuild (fresh reload) on each show.
+                GraphWebView { path in model.open(path: path) }
+                    .id(graphReload)
+            } else {
+                ReaderView(doc: model.doc, editing: model.editing,
+                           onWebView: { model.activeWebView = $0 }) { path in
+                    model.open(path: path)
+                }
             }
             if let toast = model.toast {
                 ToastView(
@@ -125,10 +137,11 @@ struct RootView: View {
     }
 
     private var graphButton: some View {
-        Button { openWindow(id: "graph") } label: {
+        Button { model.toggleGraph() } label: {
             Image(systemName: "point.3.connected.trianglepath.dotted")
+                .foregroundStyle(model.showGraph ? Weft.accent : Color.primary)
         }
-        .help("Vault graph")
+        .help(model.showGraph ? "Back to the note" : "Vault graph")
     }
 
     private var surfaceButton: some View {

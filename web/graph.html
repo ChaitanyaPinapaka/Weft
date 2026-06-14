@@ -16,7 +16,7 @@
 <div class="controls" id="controls">
   <label class="control">
     <span class="control-label">min backlinks</span>
-    <input type="number" id="min-backlinks" min="0" step="1" value="2">
+    <input type="number" id="min-backlinks" min="0" step="1" value="0">
   </label>
   <label class="control" id="tag-control" hidden>
     <span class="control-label">tag</span>
@@ -24,13 +24,27 @@
       <option value="">all</option>
     </select>
   </label>
-  <button type="button" id="reset-zoom" class="control-btn">reset zoom</button>
+  <label class="control control-check">
+    <input type="checkbox" id="semantic-toggle" checked>
+    <span class="control-label">semantic</span>
+  </label>
+  <button type="button" id="fit-view" class="control-btn">fit</button>
+  <button type="button" id="reset-zoom" class="control-btn">reset</button>
   <span class="control-meta" id="meta">—</span>
+</div>
+
+<div class="legend" id="legend" hidden>
+  <div class="legend-head">
+    <span class="legend-title">folders</span>
+    <button type="button" id="legend-clear" class="legend-clear" hidden>clear</button>
+  </div>
+  <div class="legend-items" id="legend-items"></div>
 </div>
 
 <div class="empty" id="empty" hidden></div>
 
 <svg id="graph" aria-label="Vault graph"></svg>
+<canvas id="minimap" class="minimap" width="180" height="120" aria-hidden="true"></canvas>
 <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
 
 <script type="module" src="/web/graph.js"></script>

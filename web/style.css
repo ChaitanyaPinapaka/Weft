@@ -285,44 +285,81 @@ header .status.offline { color: #c0392b; }
 
 /* TipTap mounts a ProseMirror contenteditable inside #editor. All prose
    styling lives on .ProseMirror so the rendered document looks the same
-   whether viewed inside the editor or by the read-only viewer. */
+   whether viewed inside the editor or by the read-only viewer.
+
+   Measure: cap the line length at ~68ch for comfortable reading; the .editor
+   flex track is already ~720px, this just guards very wide viewports. */
 .editor #editor { min-height: 60vh; }
 .ProseMirror {
   outline: none;
-  font-size: 1rem;
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  max-width: 68ch;
   min-height: 60vh;
+  /* Hyphenless wrapping so long words/URLs don't blow out the measure. */
+  overflow-wrap: break-word;
 }
-.ProseMirror > * + * { margin-top: 0.75em; }
+/* Vertical rhythm: a single rule that spaces consecutive blocks, then
+   per-element overrides tighten headings against the text they introduce. */
+.ProseMirror > * + * { margin-top: 0.85em; }
 
 .ProseMirror h1 {
-  font-size: 1.8rem;
+  font-size: 2rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-  margin: 0 0 0.4em;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+  margin: 0 0 0.3em;
 }
-.ProseMirror h2 { font-size: 1.25rem; margin: 1.2em 0 0.4em; }
-.ProseMirror h3 { font-size: 1.1rem;  margin: 1.0em 0 0.3em; }
+.ProseMirror h2 {
+  font-size: 1.4rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  margin: 1.4em 0 0.4em;
+}
+.ProseMirror h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  margin: 1.2em 0 0.3em;
+}
+/* A heading immediately after another block shouldn't double its top margin. */
+.ProseMirror > h2:first-child,
+.ProseMirror > h3:first-child { margin-top: 0; }
 .ProseMirror p  { margin: 0; }
-.ProseMirror a  { color: var(--accent); }
+.ProseMirror a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.ProseMirror a:hover {
+  text-decoration-color: var(--accent);
+}
 .ProseMirror ul,
 .ProseMirror ol { padding-left: 1.4em; }
+.ProseMirror li { margin: 0.2em 0; }
 .ProseMirror li > p { margin: 0; }
+.ProseMirror li::marker { color: var(--muted); }
 .ProseMirror hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 1.4em 0;
+  margin: 1.8em 0;
 }
 .ProseMirror code {
   font-family: ui-monospace, monospace;
-  font-size: 0.9em;
-  background: var(--border);
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
 }
 .ProseMirror pre {
   font-family: ui-monospace, monospace;
-  font-size: 0.88em;
+  font-size: 0.875em;
+  line-height: 1.55;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -331,14 +368,38 @@ header .status.offline { color: #c0392b; }
 }
 .ProseMirror pre code {
   background: transparent;
+  border: none;
   padding: 0;
   border-radius: 0;
   font-size: inherit;
 }
 .ProseMirror blockquote {
-  border-left: 3px solid var(--border);
-  padding-left: 14px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  padding: 0.1em 0 0.1em 16px;
   color: var(--muted);
+  font-style: italic;
+}
+.ProseMirror blockquote p { margin: 0; }
+
+/* Task list: checkbox + label laid out inline. StarterKit doesn't ship the
+   task nodes, so these classes come from @tiptap/extension-task-{list,item}. */
+.ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.ProseMirror ul[data-type="taskList"] li > label {
+  margin-top: 0.25em;
+  user-select: none;
+}
+.ProseMirror ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 /* Captured thoughts (before an editor round-trip strips the class). */
 .ProseMirror blockquote.capture { border-left-color: var(--accent); }
@@ -361,16 +422,45 @@ header .status.offline { color: #c0392b; }
   pointer-events: none;
 }
 
+/* Wikilink chips — anchors authored through the [[ ]] flow carry .wiki-chip.
+   We render them as a tinted accent pill so a note reference reads as a
+   first-class object, not just another underlined link. The underline from the
+   generic .ProseMirror a rule is dropped here in favour of the pill. */
+.ProseMirror a.wiki-chip {
+  color: var(--accent);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 5px;
+  padding: 0.05em 0.4em;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.ProseMirror a.wiki-chip:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
 /* Broken wikilinks — wiki.ExpandWikilinks marks orphans with .wiki-broken.
    Dotted underline + amber so they're distinguishable from live links at a
-   glance without screaming. */
+   glance without screaming. A broken link can also be a chip; the amber wins. */
 .ProseMirror a.wiki-broken {
   color: #b45309;
   text-decoration: underline dotted;
   text-underline-offset: 2px;
 }
+.ProseMirror a.wiki-chip.wiki-broken {
+  text-decoration: none;
+  background: color-mix(in srgb, #b45309 10%, transparent);
+  border-color: color-mix(in srgb, #b45309 30%, transparent);
+}
 @media (prefers-color-scheme: dark) {
   .ProseMirror a.wiki-broken { color: #fbbf24; }
+  .ProseMirror a.wiki-chip.wiki-broken {
+    background: color-mix(in srgb, #fbbf24 10%, transparent);
+    border-color: color-mix(in srgb, #fbbf24 30%, transparent);
+  }
 }
 
 /* Wikilink autocomplete dropdown. Rendered into document.body and positioned
@@ -416,4 +506,99 @@ header .status.offline { color: #c0392b; }
 .wiki-suggestion.is-empty {
   color: var(--muted);
   cursor: default;
+}
+
+/* Slash command menu — same floating popup as the wikilink dropdown (it reuses
+   the .wiki-suggestions shell) with a row layout of [hint] [command name]. The
+   hint is a faint monospace glyph mirroring the markdown that produces it. */
+.slash-suggestions { min-width: 220px; }
+.slash-suggestions .wiki-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.slash-suggestions .wiki-suggestion .slash-hint {
+  flex: 0 0 2.2em;
+  text-align: center;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 4px;
+  padding: 1px 0;
+  line-height: 1.4;
+}
+.slash-suggestions .wiki-suggestion.is-selected .slash-hint {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.slash-suggestions .wiki-suggestion .name {
+  display: inline;
+  font-size: 0.88rem;
+}
+
+/* Selection bubble menu — a floating toolbar shown over a text selection.
+   Positioned by @tiptap/extension-bubble-menu (tippy); we only style the bar
+   and its buttons. Mirrors the surface/border/shadow tokens of the dropdown. */
+.bubble-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 3px;
+}
+@media (prefers-color-scheme: dark) {
+  .bubble-menu { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5); }
+}
+.bubble-btn {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: var(--text);
+  border-radius: 4px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.bubble-btn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.bubble-btn.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+/* Per-button typographic cues so the toolbar reads like a real one. */
+.bubble-btn.is-bold   { font-weight: 700; }
+.bubble-btn.is-italic { font-style: italic; }
+.bubble-btn.is-code   { font-family: ui-monospace, monospace; font-size: 0.74rem; }
+.bubble-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 3px 2px;
+  background: var(--border);
+}
+
+/* Editor footer — quiet, right-aligned live word/char count under the prose. */
+.editor-footer {
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+.editor-count {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.01em;
 }
