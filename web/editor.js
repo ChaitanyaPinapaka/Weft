@@ -667,8 +667,9 @@ async function save() {
     const res = await fetch('/api/note/' + path, {
       method: 'POST', headers, body: assemble(),
     });
-    if (res.status === 412) {
-      // The note changed on disk since we loaded it; don't overwrite blindly.
+    if (res.status === 412 || res.status === 409) {
+      // 412: the note changed on disk since we loaded it. 409: it was just
+      // trashed. Either way, don't overwrite blindly — surface the choice.
       dirty = true;
       showConflict();
       return;
@@ -764,9 +765,16 @@ window.weftFlush = async function () {
 
 // Stop saving for good — the host calls this before trashing the open note so a
 // queued autosave can't recreate the file in the vault after it's been removed.
-window.weftStop = function () {
+// Async: issue no new saves, but AWAIT any already-in-flight POST so the host
+// can't fire its trash while a save is mid-write (which would resurrect the
+// note). Pairs with the server-side trash tombstone as defense in depth.
+window.weftStop = async function () {
   stopped = true;
   clearTimeout(saveTimer);
+  pending = false;
+  while (inflight) {
+    await new Promise(r => setTimeout(r, 25));
+  }
 };
 
 // ----- Brain panel ---------------------------------------------------------

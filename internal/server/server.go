@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	gohtml "golang.org/x/net/html"
@@ -94,8 +95,11 @@ func Run(vaultPath string) error {
 	// literal "stream" here instead of treating it as a note path.
 	mux.HandleFunc("GET /api/surface/stream", surfaceStreamHandler(hub))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
-	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb))
-	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix))
+	// Short-lived trash tombstones block a queued save from resurrecting a note
+	// the user just removed (shared by save + trash).
+	tomb := newTrashTombstones()
+	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb, tomb))
+	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix, tomb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
@@ -260,6 +264,44 @@ func noteHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 		_ = ix.LogAccess(rel, time.Now().Unix())
 		http.Redirect(w, r, "/web/viewer.html?path="+rel, http.StatusFound)
 	}
+}
+
+// trashTombstones remembers recently-trashed note paths so a queued save — an
+// unload beacon, or a save racing a trash from another surface — can't recreate
+// a note the user just removed (the resurrection class M8/L1/L2). Entries expire
+// after trashTombstoneTTL; the set stays tiny since it only holds the last few
+// seconds of trashes.
+const trashTombstoneTTL = 10 * time.Second
+
+type trashTombstones struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+func newTrashTombstones() *trashTombstones {
+	return &trashTombstones{at: map[string]time.Time{}}
+}
+
+func (t *trashTombstones) mark(rel string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.at[rel] = time.Now()
+}
+
+// recent reports whether rel was trashed within the TTL, pruning the entry once
+// it expires so the path can be legitimately recreated afterward.
+func (t *trashTombstones) recent(rel string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ts, ok := t.at[rel]
+	if !ok {
+		return false
+	}
+	if time.Since(ts) > trashTombstoneTTL {
+		delete(t.at, rel)
+		return false
+	}
+	return true
 }
 
 // etag is a strong validator over a note's exact on-disk bytes. The editor reads
@@ -605,7 +647,7 @@ func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Han
 // never-delete invariant) and its rows leave the index, so the note stops
 // listing, searching, and surfacing. Human-only by design: the MCP surface
 // exposes no delete tool.
-func trashHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+func trashHandler(v *vault.Vault, ix *index.Index, tomb *trashTombstones) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !strings.HasSuffix(rel, ".html") {
@@ -619,6 +661,9 @@ func trashHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 		}
 		v.Lock(rel)
 		defer v.Unlock(rel)
+		// Tombstone first, inside the lock: a save that was waiting on this lock
+		// will see the tombstone and refuse to recreate the note.
+		tomb.mark(rel)
 		if !v.Exists(rel) {
 			http.Error(w, "note not found", http.StatusNotFound)
 			return
@@ -841,7 +886,7 @@ func computeSurface(v *vault.Vault, ix *index.Index, p surface.Params, cur strin
 	}, nil
 }
 
-func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, tomb *trashTombstones) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !strings.HasSuffix(rel, ".html") {
@@ -874,6 +919,12 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 		// concurrent save / capture / sync-apply can't interleave and lose data.
 		v.Lock(rel)
 		defer v.Unlock(rel)
+
+		// Don't let a queued/racing save resurrect a just-trashed note (R5).
+		if tomb.recent(rel) {
+			http.Error(w, "note was just removed", http.StatusConflict)
+			return
+		}
 
 		// Optimistic concurrency (R1): if the client sent the baseline it loaded,
 		// reject the write when the on-disk bytes have changed since (another tab,

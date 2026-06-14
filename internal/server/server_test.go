@@ -207,7 +207,7 @@ func TestSurfaceHandlerSelfSourceNoBoost(t *testing.T) {
 // directions), and the handler 404s on missing notes and 400s on traversal.
 func TestTrashHandler(t *testing.T) {
 	v, ix := surfaceFixture(t)
-	h := trashHandler(v, ix)
+	h := trashHandler(v, ix, newTrashTombstones())
 
 	call := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodDelete, "/api/note/"+path, nil)
@@ -253,7 +253,7 @@ func TestTrashHandler(t *testing.T) {
 // one with 412 (no overwrite), and an unconditional save (no If-Match) wins.
 func TestSaveHandlerIfMatch(t *testing.T) {
 	v, ix := surfaceFixture(t)
-	save := saveHandler(v, ix, nil)
+	save := saveHandler(v, ix, nil, newTrashTombstones())
 	raw := rawHandler(v)
 
 	post := func(path, ifMatch, body string) *httptest.ResponseRecorder {
@@ -302,6 +302,35 @@ func TestSaveHandlerIfMatch(t *testing.T) {
 	}
 	if got, _ := v.Read("focus.html"); !strings.Contains(string(got), "v4") {
 		t.Fatal("unconditional save should have written v4")
+	}
+}
+
+// TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
+// (R5) so a queued autosave/beacon can't recreate a removed note.
+func TestTrashTombstoneBlocksResurrection(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	tomb := newTrashTombstones()
+	trash := trashHandler(v, ix, tomb)
+	save := saveHandler(v, ix, nil, tomb)
+
+	del := httptest.NewRequest(http.MethodDelete, "/api/note/focus.html", nil)
+	del.SetPathValue("path", "focus.html")
+	if rr := httptest.NewRecorder(); true {
+		trash(rr, del)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("trash: want 200, got %d", rr.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/note/focus.html", strings.NewReader(`<article><h1>Focus</h1><p>resurrected</p></article>`))
+	req.SetPathValue("path", "focus.html")
+	rr := httptest.NewRecorder()
+	save(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("save to just-trashed path: want 409, got %d", rr.Code)
+	}
+	if v.Exists("focus.html") {
+		t.Fatal("a tombstoned save must not recreate the note")
 	}
 }
 
