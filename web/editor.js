@@ -761,6 +761,9 @@ window.weftFlush = async function () {
   while (inflight || pending) {
     await new Promise(r => setTimeout(r, 25));
   }
+  // true once everything has landed; false if still dirty (offline) or a
+  // conflict is unresolved — the host keeps the user in the editor on false.
+  return !dirty && !conflicted;
 };
 
 // Stop saving for good — the host calls this before trashing the open note so a

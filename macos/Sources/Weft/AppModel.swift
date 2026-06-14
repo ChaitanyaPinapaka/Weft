@@ -98,10 +98,14 @@ final class AppModel {
     /// first (mirroring finishEditing's Done path) or the last ~1s of edits are
     /// lost. Hiding the graph is a plain toggle.
     func toggleGraph() {
-        // Switching INTO the graph while editing: flush first, then show.
+        // Switching INTO the graph while editing: flush first, then show. If the
+        // flush fails, stay in the editor so edits aren't lost behind the graph.
         if !showGraph && editing {
             Task {
-                await flushEditor() // returns only once the final save has landed
+                guard await flushEditor() else {
+                    errorMessage = "Couldn’t save before opening the graph; staying in the editor."
+                    return
+                }
                 showGraph = true
             }
             return
@@ -114,6 +118,29 @@ final class AppModel {
         // lands you on that note in the same window.
         showGraph = false
         guard path != currentPath || doc == nil else { return }
+
+        // If we're editing a different note, flush its pending save before tearing
+        // down the editor WKWebView (which fires no beforeunload), or the last ~1s
+        // of edits are lost on a link-hop / sidebar / inbox navigation. If the
+        // flush fails (daemon down), stay put and surface it rather than lose work.
+        if editing, let cur = currentPath, cur != path {
+            Task {
+                let saved = await flushEditor()
+                if !saved {
+                    errorMessage = "Couldn’t save \(titleFor(cur)). Staying in the editor so you don’t lose changes."
+                    return
+                }
+                editing = false
+                loadInto(path: path)
+            }
+            return
+        }
+        loadInto(path: path)
+    }
+
+    /// Tear down to the reader and load `path`. Assumes any prior edit was already
+    /// flushed by the caller.
+    private func loadInto(path: String) {
         currentPath = path
         loading = true
         // Clear any inbox/toast entry for this note — opening it IS attending to it.
@@ -167,7 +194,13 @@ final class AppModel {
     func finishEditing() async {
         guard editing else { return }
         guard let path = currentPath else { editing = false; return }
-        await flushEditor() // returns only once the final save has landed
+        let saved = await flushEditor() // returns only once the final save has landed
+        if !saved {
+            // Don't drop the user into a stale reader that hides unsaved edits —
+            // keep editing and surface the failure (mirrors trash()'s handling).
+            errorMessage = "Couldn’t save \(titleFor(path)). Check the daemon is running; your edits are still here."
+            return
+        }
         editing = false
         // Bail if the user already moved on (or re-entered the editor).
         guard currentPath == path, !editing else { return }
@@ -178,11 +211,25 @@ final class AppModel {
         await reloadNotes() // sidebar title / mod-date may have changed
     }
 
-    /// Drive the embedded editor's final save and wait for it to land.
-    private func flushEditor() async {
-        guard let web = activeWebView else { return }
-        _ = try? await web.callAsyncJavaScript(
-            "await window.weftFlush?.()", arguments: [:], in: nil, contentWorld: .page)
+    /// Drive the embedded editor's final save and wait for it to land. Returns
+    /// false if the editor reports it could not save (offline / unresolved
+    /// conflict), so callers can keep the user in the editor instead of losing work.
+    @discardableResult
+    private func flushEditor() async -> Bool {
+        guard let web = activeWebView else { return true }
+        let result = try? await web.callAsyncJavaScript(
+            "return await window.weftFlush?.()", arguments: [:], in: nil, contentWorld: .page)
+        // weftFlush returns a Bool; treat a null/throw as "landed" so a missing
+        // bridge (non-editor page) doesn't wedge navigation.
+        if let ok = result as? Bool { return ok }
+        return true
+    }
+
+    /// Best-effort flush before the app exits (Cmd-Q / Quit). Public so the app
+    /// delegate can await it from applicationShouldTerminate.
+    func flushOnExit() async {
+        guard editing else { return }
+        _ = await flushEditor()
     }
 
     /// Stop the embedded editor from issuing any further saves — used before
@@ -252,6 +299,20 @@ final class AppModel {
 
     private func receive(_ ev: SurfaceEvent) {
         WeftLog.write("AppModel.receive type=\(ev.type) path=\(ev.path ?? "nil") current=\(currentPath ?? "nil")")
+        // A note changed on disk (capture/rename/sync). Refresh the native reader
+        // if it's the open note. While editing, the embedded editor page handles
+        // its own reload/conflict via its EventSource, so leave it untouched.
+        if ev.isChanged {
+            if let p = ev.path, p == currentPath, !editing {
+                Task {
+                    if let raw = try? await client.rawHTML(path: p) {
+                        doc = ReaderDoc.parse(rawHTML: raw, path: p, fallbackTitle: titleFor(p))
+                    }
+                    surface = (try? await client.surface(path: p)) ?? surface
+                }
+            }
+            return
+        }
         guard ev.isSurface, let path = ev.path else { return }
         // Don't surface the note already on screen, and de-dupe the inbox.
         guard path != currentPath else { return }

@@ -85,6 +85,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
     }
 
+    // Flush the embedded editor's pending save before quitting (Cmd-Q / Quit).
+    // WKWebView fires no beforeunload on teardown, so without this the last ~1s
+    // of edits would be lost on exit. terminateLater lets the async flush finish.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard AppModel.shared.editing else { return .terminateNow }
+        Task { @MainActor in
+            await AppModel.shared.flushOnExit()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     // MARK: - Menu-bar item
 
     private func setupStatusItem() {

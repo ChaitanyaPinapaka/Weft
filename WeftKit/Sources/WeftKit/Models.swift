@@ -181,6 +181,10 @@ public struct SurfaceEvent: Codable, Identifiable, Hashable {
 
     public var isSurface: Bool { type == "surface" && !(path ?? "").isEmpty }
 
+    /// A "this note changed on disk" push (capture/rename/sync), not a surfacing
+    /// suggestion — open readers reload on it.
+    public var isChanged: Bool { type == "changed" && !(path ?? "").isEmpty }
+
     public var displayTitle: String { ((title ?? path ?? "") as NSString).lastPathComponent }
 }
 
