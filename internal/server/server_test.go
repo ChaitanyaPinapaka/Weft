@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +245,63 @@ func TestTrashHandler(t *testing.T) {
 	}
 	if rr := call("../evil.html"); rr.Code != http.StatusBadRequest {
 		t.Fatalf("traversal: want 400, got %d", rr.Code)
+	}
+}
+
+// TestSaveHandlerIfMatch exercises the R1 optimistic-concurrency flow: /raw
+// hands out an ETag, saveHandler accepts a matching If-Match, rejects a stale
+// one with 412 (no overwrite), and an unconditional save (no If-Match) wins.
+func TestSaveHandlerIfMatch(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	save := saveHandler(v, ix, nil)
+	raw := rawHandler(v)
+
+	post := func(path, ifMatch, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/note/"+path, strings.NewReader(body))
+		req.SetPathValue("path", path)
+		if ifMatch != "" {
+			req.Header.Set("If-Match", ifMatch)
+		}
+		rr := httptest.NewRecorder()
+		save(rr, req)
+		return rr
+	}
+	getETag := func(path string) string {
+		req := httptest.NewRequest(http.MethodGet, "/raw/"+path, nil)
+		req.SetPathValue("path", path)
+		rr := httptest.NewRecorder()
+		raw(rr, req)
+		return rr.Header().Get("ETag")
+	}
+
+	// First conditional save matches the on-disk baseline.
+	et := getETag("focus.html")
+	if et == "" {
+		t.Fatal("rawHandler must return an ETag")
+	}
+	if rr := post("focus.html", et, `<article><h1>Focus</h1><p>v2</p></article>`); rr.Code != http.StatusNoContent {
+		t.Fatalf("matching If-Match: want 204, got %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	// The old ETag is now stale — a save with it must be refused, not applied.
+	rr := post("focus.html", et, `<article><h1>Focus</h1><p>v3-should-be-rejected</p></article>`)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale If-Match: want 412, got %d", rr.Code)
+	}
+	if got, _ := v.Read("focus.html"); strings.Contains(string(got), "v3-should-be-rejected") {
+		t.Fatal("a 412 must not write the note")
+	}
+
+	// The new ETag (from the response or a fresh /raw) is accepted again.
+	if rr := post("focus.html", getETag("focus.html"), `<article><h1>Focus</h1><p>v3</p></article>`); rr.Code != http.StatusNoContent {
+		t.Fatalf("refreshed If-Match: want 204, got %d", rr.Code)
+	}
+	// No If-Match = unconditional overwrite (the "keep mine" path) always wins.
+	if rr := post("focus.html", "", `<article><h1>Focus</h1><p>v4</p></article>`); rr.Code != http.StatusNoContent {
+		t.Fatalf("unconditional save: want 204, got %d", rr.Code)
+	}
+	if got, _ := v.Read("focus.html"); !strings.Contains(string(got), "v4") {
+		t.Fatal("unconditional save should have written v4")
 	}
 }
 

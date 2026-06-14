@@ -99,6 +99,12 @@ let stopped = false; // set by the host bridge to prevent any further saves
 // `update` on programmatic setContent unless we pass `emitUpdate:false`, but
 // being explicit with a guard is safer across versions.
 let loading = true;
+// Optimistic-concurrency baseline (R1): the ETag of the bytes we last loaded or
+// saved. Sent as If-Match so the daemon rejects (412) a save when the note has
+// changed underneath us — another tab/device or a capture — instead of clobbering
+// it. null = no baseline (a brand-new note, or after the user chose "overwrite").
+let currentETag = null;
+let conflicted = false;
 
 function setStatus(state, text) {
   statusEl.className = 'status ' + state;
@@ -633,6 +639,7 @@ async function load() {
       loading = false;
       return;
     }
+    currentETag = res.headers.get('ETag'); // baseline for optimistic save
     const html = await res.text();
     const inner = extractArticle(html);
     editor.commands.setContent(inner, false); // false = don't emit update
@@ -645,7 +652,7 @@ async function load() {
 }
 
 async function save() {
-  if (stopped) return;
+  if (stopped || conflicted) return;
   if (!path) {
     setStatus('offline', 'no path');
     return;
@@ -655,12 +662,19 @@ async function save() {
   dirty = false;
   setStatus('saving', 'saving…');
   try {
+    const headers = { 'Content-Type': 'text/html' };
+    if (currentETag) headers['If-Match'] = currentETag;
     const res = await fetch('/api/note/' + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/html' },
-      body: assemble(),
+      method: 'POST', headers, body: assemble(),
     });
+    if (res.status === 412) {
+      // The note changed on disk since we loaded it; don't overwrite blindly.
+      dirty = true;
+      showConflict();
+      return;
+    }
     if (!res.ok) throw new Error('http ' + res.status);
+    currentETag = res.headers.get('ETag') || currentETag; // new baseline
     setStatus('saved', 'saved');
     setTitleDirty(false);
     scheduleSurfaceRefresh();
@@ -671,6 +685,33 @@ async function save() {
     inflight = false;
     if (pending) { pending = false; save(); }
   }
+}
+
+// On a 412 we stop autosaving and offer an explicit choice rather than silently
+// losing either side: Reload (take the on-disk version, discard local edits) or
+// Overwrite (drop the baseline so the next save wins unconditionally).
+let conflictBanner = null;
+function showConflict() {
+  conflicted = true;
+  setStatus('offline', 'changed on disk');
+  if (conflictBanner) { conflictBanner.hidden = false; return; }
+  conflictBanner = document.createElement('div');
+  conflictBanner.className = 'conflict-banner';
+  const msg = document.createElement('span');
+  msg.textContent = 'This note changed elsewhere (another tab, device, or a capture).';
+  const reload = document.createElement('button');
+  reload.type = 'button'; reload.textContent = 'Reload';
+  reload.addEventListener('click', () => location.reload());
+  const keep = document.createElement('button');
+  keep.type = 'button'; keep.textContent = 'Overwrite with mine';
+  keep.addEventListener('click', () => {
+    conflicted = false;
+    currentETag = null;          // unconditional next save
+    conflictBanner.hidden = true;
+    save();
+  });
+  conflictBanner.append(msg, reload, keep);
+  document.body.appendChild(conflictBanner);
 }
 
 // Autosave fires 1s after the last keystroke; the spec bumped this from 300ms
@@ -692,11 +733,18 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// Best-effort flush on tab close.
+// Best-effort flush on tab close. Use fetch(keepalive) rather than sendBeacon so
+// the request can carry If-Match — the beacon must not clobber a newer on-disk
+// version either. Fire on dirty OR inflight (a save in flight already cleared
+// dirty but its bytes may not have landed). Conflicts are surfaced on the live
+// page, not here, so a 412 on unload simply leaves the on-disk version intact.
 window.addEventListener('beforeunload', () => {
-  if (dirty && path) {
-    navigator.sendBeacon?.('/api/note/' + path,
-      new Blob([assemble()], { type: 'text/html' }));
+  if ((dirty || inflight) && path && !stopped && !conflicted) {
+    const headers = { 'Content-Type': 'text/html' };
+    if (currentETag) headers['If-Match'] = currentETag;
+    fetch('/api/note/' + path, {
+      method: 'POST', headers, body: assemble(), keepalive: true,
+    }).catch(() => {});
   }
 });
 

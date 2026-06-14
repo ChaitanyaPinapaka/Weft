@@ -3,6 +3,8 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -175,7 +177,8 @@ func withCORS(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-Match")
+			w.Header().Set("Access-Control-Expose-Headers", "ETag")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -259,6 +262,16 @@ func noteHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 	}
 }
 
+// etag is a strong validator over a note's exact on-disk bytes. The editor reads
+// it on load (from /raw) and sends it back as If-Match on save, so saveHandler
+// can reject a write whose baseline has since changed (another tab, device, or a
+// capture) instead of blindly clobbering it. Truncated to 16 bytes — ample for
+// collision-free change detection on a personal vault.
+func etag(content []byte) string {
+	sum := sha256.Sum256(content)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
 // rawHandler serves the raw .html bytes — what /note/{path} used to do.
 // Used by viewer.js to fetch the note content; not in the access log.
 func rawHandler(v *vault.Vault) http.HandlerFunc {
@@ -272,6 +285,7 @@ func rawHandler(v *vault.Vault) http.HandlerFunc {
 			http.Error(w, "note not found", http.StatusNotFound)
 			return
 		}
+		w.Header().Set("ETag", etag(content))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(content)
 	}
@@ -861,6 +875,24 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 		v.Lock(rel)
 		defer v.Unlock(rel)
 
+		// Optimistic concurrency (R1): if the client sent the baseline it loaded,
+		// reject the write when the on-disk bytes have changed since (another tab,
+		// device, or a capture), so a stale editor buffer can't silently clobber a
+		// newer version. "*" means "only if it exists". The editor surfaces the 412
+		// as a reload-or-overwrite choice instead of losing data.
+		if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+			cur, err := v.Read(rel)
+			switch {
+			case err != nil: // baseline note is gone (e.g. trashed under us)
+				http.Error(w, "note no longer exists", http.StatusPreconditionFailed)
+				return
+			case ifMatch != "*" && etag(cur) != ifMatch:
+				w.Header().Set("ETag", etag(cur))
+				http.Error(w, "note changed on disk", http.StatusPreconditionFailed)
+				return
+			}
+		}
+
 		content = prepareNote(v, rel, content) // stamp/preserve WeftID + link ids
 		if err := v.Write(rel, content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -885,6 +917,8 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			fmt.Printf("save: index upsert %s: %v (heals on next reindex)\n", rel, err)
 		}
 		updateEmbedding(ix, emb, rel, title+"\n"+body)
+		// Return the new baseline so the editor can keep saving without a reload.
+		w.Header().Set("ETag", etag(content))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

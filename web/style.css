@@ -283,6 +283,37 @@ header .status.offline { color: #c0392b; }
   header .status.offline { color: #ff7a6e; }
 }
 
+/* Conflict banner (R1): shown when a save is rejected because the note changed
+   on disk. Fixed to the bottom so it's unmissable without shoving the prose. */
+.conflict-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  max-width: min(90vw, 640px);
+  padding: 0.6rem 0.9rem;
+  background: #c0392b;
+  color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-size: 0.85rem;
+  z-index: 1000;
+}
+.conflict-banner button {
+  flex-shrink: 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.conflict-banner button:hover { background: rgba(255, 255, 255, 0.15); }
+
 /* TipTap mounts a ProseMirror contenteditable inside #editor. All prose
    styling lives on .ProseMirror so the rendered document looks the same
    whether viewed inside the editor or by the read-only viewer.
