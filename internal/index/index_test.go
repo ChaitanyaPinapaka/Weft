@@ -234,7 +234,7 @@ func TestStale(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// Unknown path is always stale.
-	stale, err := ix.Stale("missing.html", now)
+	stale, err := ix.Stale("missing.html", now, 0)
 	if err != nil {
 		t.Fatalf("Stale missing: %v", err)
 	}
@@ -249,20 +249,24 @@ func TestStale(t *testing.T) {
 	cases := []struct {
 		name string
 		fs   time.Time
+		size int64
 		want bool
 	}{
-		{"equal", now, false},
-		{"newer-fs", now.Add(time.Minute), true},
-		{"older-fs", now.Add(-time.Minute), false},
+		{"equal", now, 1, false},
+		{"newer-fs", now.Add(time.Minute), 1, true},
+		{"older-fs", now.Add(-time.Minute), 1, false},
+		// Same second, different size — the same-second content change Stale must
+		// still catch (size is the tiebreaker mtime granularity misses).
+		{"same-mtime-new-size", now, 2, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ix.Stale("k.html", tc.fs)
+			got, err := ix.Stale("k.html", tc.fs, tc.size)
 			if err != nil {
 				t.Fatalf("Stale: %v", err)
 			}
 			if got != tc.want {
-				t.Fatalf("Stale(%v) = %v, want %v", tc.fs, got, tc.want)
+				t.Fatalf("Stale(%v,%d) = %v, want %v", tc.fs, tc.size, got, tc.want)
 			}
 		})
 	}

@@ -583,12 +583,29 @@ func (e *Engine) foldEntry(id string, r Entry, peer DeviceID, res *Result) error
 // to .trash (never a hard delete); a path change is completed as a move (old
 // file trashed); otherwise the remote content is written at its path. Same
 // content (blob present) is a metadata-only update.
+// lockedWrite / lockedTrash mutate a single note while holding its vault
+// per-path lock, so a concurrent editor save / capture to the same file can't
+// interleave with sync's apply and lose data. Each call is a discrete write
+// (sync already holds the decrypted content), so per-call locking is enough —
+// the engine never nests vault locks.
+func (e *Engine) lockedWrite(rel string, content []byte) error {
+	e.v.Lock(rel)
+	defer e.v.Unlock(rel)
+	return e.v.Write(rel, content)
+}
+
+func (e *Engine) lockedTrash(rel string) error {
+	e.v.Lock(rel)
+	defer e.v.Unlock(rel)
+	return e.v.Trash(rel)
+}
+
 func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 	prev, had := e.st.Manifest[id]
 
 	if r.Deleted {
 		if had && !prev.Deleted {
-			_ = e.v.Trash(prev.Path) // preserve bytes in .trash
+			_ = e.lockedTrash(prev.Path) // preserve bytes in .trash
 			res.Applied++
 		}
 		e.st.Manifest[id] = r
@@ -599,12 +616,12 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 	if err != nil {
 		return nil // peer's blob not uploaded yet; retry next pull
 	}
-	if err := e.v.Write(r.Path, content); err != nil {
+	if err := e.lockedWrite(r.Path, content); err != nil {
 		return err
 	}
 	// Rename/move: if the note used to live elsewhere, trash the stale old file.
 	if had && prev.Path != "" && prev.Path != r.Path {
-		_ = e.v.Trash(prev.Path)
+		_ = e.lockedTrash(prev.Path)
 	}
 	e.st.Manifest[id] = r
 	res.Applied++
@@ -644,10 +661,10 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 			if err != nil {
 				return nil // blob not ready; retry next pull, manifest path unchanged
 			}
-			if err := e.v.Write(win.Path, content); err != nil {
+			if err := e.lockedWrite(win.Path, content); err != nil {
 				return err
 			}
-			_ = e.v.Trash(l.Path)
+			_ = e.lockedTrash(l.Path)
 			res.Applied++
 		}
 		l.Path = win.Path
@@ -668,11 +685,11 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	// Winner takes the canonical path (idempotent write). If our local copy lived
 	// at a different path (a concurrent rename), trash the stale file so the winner
 	// isn't left behind as a duplicate.
-	if err := e.v.Write(win.Path, winContent); err != nil {
+	if err := e.lockedWrite(win.Path, winContent); err != nil {
 		return err
 	}
 	if l.Path != "" && l.Path != win.Path {
-		_ = e.v.Trash(l.Path)
+		_ = e.lockedTrash(l.Path)
 	}
 	e.st.Manifest[id] = Entry{
 		WeftID: id, Path: win.Path, VV: merged, BlobID: win.BlobID,
@@ -689,7 +706,7 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	if err != nil {
 		stamped = loseContent
 	}
-	if err := e.v.Write(cpath, stamped); err != nil {
+	if err := e.lockedWrite(cpath, stamped); err != nil {
 		return err
 	}
 	bid, err := e.putBlob(stamped)

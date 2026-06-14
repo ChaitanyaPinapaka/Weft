@@ -24,9 +24,57 @@ type Note struct {
 type Vault struct {
 	Root string // absolute path to vault directory
 
-	// captureMu serializes the read-modify-write in AppendCapture so two
-	// concurrent captures into the same daily note can't clobber each other.
-	captureMu sync.Mutex
+	// locks is a striped, per-note-path mutex set (map[string]*sync.Mutex keyed
+	// by the cleaned relative path). Every mutating op — save, capture, trash,
+	// rename, and the sync engine's apply — must hold the path's lock across its
+	// whole read-modify-write so concurrent writers to one file can't lose
+	// updates. Writes themselves are atomic (temp+rename); the lock adds the
+	// mutual exclusion that atomicity alone doesn't provide.
+	locks sync.Map
+}
+
+// lockFor returns the mutex guarding a single note path, creating it on first
+// use. Keyed by the same cleaned form abs() uses, so "/x.html" and "x.html"
+// collapse to one lock.
+func (v *Vault) lockFor(rel string) *sync.Mutex {
+	key := filepath.Clean("/" + rel)
+	m, _ := v.locks.LoadOrStore(key, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// Lock/Unlock guard the full read-modify-write of one note. Write/Trash do NOT
+// lock internally (that would deadlock a caller already holding the lock across
+// a preceding Read), so every mutating caller must bracket its span with these.
+func (v *Vault) Lock(rel string)   { v.lockFor(rel).Lock() }
+func (v *Vault) Unlock(rel string) { v.lockFor(rel).Unlock() }
+
+// LockTwo locks two note paths in a stable (sorted-key) order to avoid deadlock
+// when an op touches both — e.g. rename. Returns the matching unlock func.
+func (v *Vault) LockTwo(a, b string) (unlock func()) {
+	ka, kb := filepath.Clean("/"+a), filepath.Clean("/"+b)
+	if ka == kb {
+		m := v.lockFor(a)
+		m.Lock()
+		return m.Unlock
+	}
+	first, second := a, b
+	if ka > kb {
+		first, second = b, a
+	}
+	mf, ms := v.lockFor(first), v.lockFor(second)
+	mf.Lock()
+	ms.Lock()
+	return func() { ms.Unlock(); mf.Unlock() }
+}
+
+// ModTime returns the filesystem modification time of a note, used to stamp the
+// index with the real on-disk mtime rather than time.Now().
+func (v *Vault) ModTime(rel string) (time.Time, error) {
+	fi, err := os.Stat(v.abs(rel))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fi.ModTime(), nil
 }
 
 // New returns a Vault rooted at root. The directory must already exist.

@@ -125,7 +125,7 @@ func IndexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 		return err
 	}
 	for _, n := range notes {
-		stale, err := ix.Stale(n.Path, n.ModTime)
+		stale, err := ix.Stale(n.Path, n.ModTime, n.Size)
 		if err != nil {
 			return err
 		}

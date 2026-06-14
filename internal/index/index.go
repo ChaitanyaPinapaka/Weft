@@ -521,19 +521,23 @@ func (ix *Index) RecentAccesses(since int64) ([]Access, error) {
 	return out, rows.Err()
 }
 
-// Stale reports whether the on-disk note at `path` (with the given filesystem
-// mtime) is newer than what's in the index. Unknown paths are stale so the
-// startup walker indexes them.
-func (ix *Index) Stale(path string, fsModTime time.Time) (bool, error) {
-	var stored int64
-	err := ix.db.QueryRow(`SELECT mtime FROM notes WHERE path = ?`, path).Scan(&stored)
+// Stale reports whether the on-disk note at `path` differs from what's in the
+// index. Unknown paths are stale so the startup walker indexes them. We compare
+// BOTH mtime and size: mtime alone has whole-second granularity, so a local
+// save and a sync write of the same note in the same second could otherwise be
+// skipped — leaving stale FTS/backlink/embedding rows. A size change in that
+// window is caught here; the rare same-second/same-size edit still heals on the
+// next distinct-second write.
+func (ix *Index) Stale(path string, fsModTime time.Time, fsSize int64) (bool, error) {
+	var storedMtime, storedSize int64
+	err := ix.db.QueryRow(`SELECT mtime, size FROM notes WHERE path = ?`, path).Scan(&storedMtime, &storedSize)
 	if err == sql.ErrNoRows {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return fsModTime.Unix() > stored, nil
+	return fsModTime.Unix() > storedMtime || fsSize != storedSize, nil
 }
 
 type TagCount struct {

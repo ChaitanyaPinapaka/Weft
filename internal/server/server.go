@@ -453,18 +453,27 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 			return
 		}
 		// Re-index the daily note so the new bullet is searchable + embedded.
+		// Hold the path lock so the read+upsert reflects one consistent version.
+		v.Lock(rel)
 		if content, err := v.Read(rel); err == nil {
 			t, txt := extractTitleBody(content)
-			_ = ix.Upsert(index.Note{
+			mt := time.Now()
+			if m, err := v.ModTime(rel); err == nil {
+				mt = m
+			}
+			if err := ix.Upsert(index.Note{
 				Path:    rel,
 				Title:   t,
 				Body:    txt,
 				Links:   index.ParseLinks(content),
-				ModTime: time.Now(),
+				ModTime: mt,
 				Size:    int64(len(content)),
-			})
+			}); err != nil {
+				fmt.Printf("capture: index upsert %s: %v (heals on next reindex)\n", rel, err)
+			}
 			updateEmbedding(ix, emb, rel, t+"\n"+txt)
 		}
+		v.Unlock(rel)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}
@@ -500,6 +509,11 @@ func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Han
 			http.Error(w, "to must differ from source", http.StatusBadRequest)
 			return
 		}
+		// Lock both paths (stable order) for the whole move so a save/capture to
+		// either side can't race the read-write-delete.
+		unlock := v.LockTwo(oldRel, newRel)
+		defer unlock()
+
 		if !v.Exists(oldRel) {
 			http.Error(w, "source not found", http.StatusNotFound)
 			return
@@ -589,6 +603,8 @@ func trashHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
 			http.Error(w, "invalid path", http.StatusBadRequest)
 			return
 		}
+		v.Lock(rel)
+		defer v.Unlock(rel)
 		if !v.Exists(rel) {
 			http.Error(w, "note not found", http.StatusNotFound)
 			return
@@ -840,20 +856,34 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			}
 		}
 
+		// Hold the note's per-path lock across read-existing → write → index so a
+		// concurrent save / capture / sync-apply can't interleave and lose data.
+		v.Lock(rel)
+		defer v.Unlock(rel)
+
 		content = prepareNote(v, rel, content) // stamp/preserve WeftID + link ids
 		if err := v.Write(rel, content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		title, body := extractTitleBody(content)
-		_ = ix.Upsert(index.Note{
+		// Stamp the index with the real on-disk mtime (not time.Now()) so the
+		// startup/post-sync staleness check can't be fooled by clock skew, and
+		// surface the upsert error rather than silently desyncing the index.
+		mt := time.Now()
+		if m, err := v.ModTime(rel); err == nil {
+			mt = m
+		}
+		if err := ix.Upsert(index.Note{
 			Path:    rel,
 			Title:   title,
 			Body:    body,
 			Links:   index.ParseLinks(content),
-			ModTime: time.Now(),
+			ModTime: mt,
 			Size:    int64(len(content)),
-		})
+		}); err != nil {
+			fmt.Printf("save: index upsert %s: %v (heals on next reindex)\n", rel, err)
+		}
 		updateEmbedding(ix, emb, rel, title+"\n"+body)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -901,7 +931,7 @@ func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 		return err
 	}
 	for _, n := range notes {
-		stale, err := ix.Stale(n.Path, n.ModTime)
+		stale, err := ix.Stale(n.Path, n.ModTime, n.Size)
 		if err != nil {
 			return err
 		}

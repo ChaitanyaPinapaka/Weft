@@ -36,13 +36,15 @@ func (v *Vault) AppendCapture(t time.Time, text string) (string, error) {
 		return "", ErrEmptyCapture
 	}
 
-	// Serialize the whole read-parse-write: concurrent captures into the same
-	// daily note would otherwise race and silently drop one. Never lose a thought.
-	v.captureMu.Lock()
-	defer v.captureMu.Unlock()
+	// Hold the daily note's per-path lock across the whole ensure-read-parse-write
+	// so a concurrent capture OR editor save can't clobber this append (and vice
+	// versa). The path is deterministic from the date, so we can lock before
+	// EnsureDaily creates it. Never lose a thought.
+	rel := v.DailyPath(t)
+	v.Lock(rel)
+	defer v.Unlock(rel)
 
-	rel, err := v.EnsureDaily(t)
-	if err != nil {
+	if _, err := v.EnsureDaily(t); err != nil {
 		return "", err
 	}
 	content, err := v.Read(rel)
