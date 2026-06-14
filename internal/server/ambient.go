@@ -26,7 +26,7 @@ import (
 // a suggestion. JSON tags are lowercase (unlike the pull endpoint's PascalCase
 // structs) because this is a fresh, native-client-facing contract.
 type surfaceEvent struct {
-	Type       string  `json:"type"`             // "hello" | "surface"
+	Type       string  `json:"type"`             // "hello" | "surface" | "changed"
 	Path       string  `json:"path,omitempty"`   // vault-relative .html path
 	Title      string  `json:"title,omitempty"`  // note name (sans extension)
 	Reason     string  `json:"reason,omitempty"` // resurfaced|on-this-day|semantic|backlink|co-access
@@ -60,6 +60,17 @@ func (h *ambientHub) unsubscribe(ch chan surfaceEvent) {
 		close(ch)
 	}
 	h.mu.Unlock()
+}
+
+// changed notifies subscribers that a note's bytes changed out-of-band (a
+// capture, a rename, or a sync pull) so open readers/editors can reload or warn
+// instead of showing a stale buffer that would then clobber the newer version.
+// De-duplicated against empty paths.
+func (h *ambientHub) changed(path string) {
+	if path == "" {
+		return
+	}
+	h.broadcast(surfaceEvent{Type: "changed", Path: path})
 }
 
 func (h *ambientHub) count() int {

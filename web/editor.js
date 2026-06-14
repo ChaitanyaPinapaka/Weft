@@ -1023,3 +1023,24 @@ async function loadSurface() {
 }
 
 load().then(() => { updateCounts(); return loadSurface(); });
+
+// Live "this note changed on disk" notifications (R3): a capture, rename, or
+// sync pull touched the open note out of band. If we're clean, reload to show
+// it; if we have unsaved edits, surface the non-destructive conflict choice
+// rather than silently dropping either side. Our own saves don't emit this.
+function subscribeChanges() {
+  if (!path || typeof EventSource === 'undefined') return;
+  let es;
+  try { es = new EventSource('/api/surface/stream'); } catch (e) { return; }
+  es.addEventListener('changed', (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch (_) { return; }
+    if (!data || data.path !== path || conflicted) return;
+    if (!dirty && !inflight) {
+      location.reload();
+    } else {
+      showConflict();
+    }
+  });
+}
+subscribeChanges();

@@ -262,7 +262,8 @@ func (e *Engine) Device() DeviceID { return e.st.Device }
 // Result reports what a Sync did, for tests/UI.
 type Result struct {
 	Pushed         int
-	Applied        int // remote changes written locally (fast-forwards)
+	Applied        int      // remote changes written locally (fast-forwards)
+	AppliedPaths   []string // vault-relative paths touched by this sync (for change notifications)
 	ConflictCopies []string
 	Rejected       int // peer HEADs dropped: bad signature or HEAD/manifest mismatch
 	Unverifiable   int // peer HEADs with no verifying key in the registry (e.g. a withheld device record)
@@ -607,6 +608,7 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 		if had && !prev.Deleted {
 			_ = e.lockedTrash(prev.Path) // preserve bytes in .trash
 			res.Applied++
+			res.AppliedPaths = append(res.AppliedPaths, prev.Path)
 		}
 		e.st.Manifest[id] = r
 		return nil
@@ -619,9 +621,11 @@ func (e *Engine) applyRemote(id string, r Entry, res *Result) error {
 	if err := e.lockedWrite(r.Path, content); err != nil {
 		return err
 	}
+	res.AppliedPaths = append(res.AppliedPaths, r.Path)
 	// Rename/move: if the note used to live elsewhere, trash the stale old file.
 	if had && prev.Path != "" && prev.Path != r.Path {
 		_ = e.lockedTrash(prev.Path)
+		res.AppliedPaths = append(res.AppliedPaths, prev.Path)
 	}
 	e.st.Manifest[id] = r
 	res.Applied++
@@ -666,6 +670,7 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 			}
 			_ = e.lockedTrash(l.Path)
 			res.Applied++
+			res.AppliedPaths = append(res.AppliedPaths, win.Path, l.Path)
 		}
 		l.Path = win.Path
 		l.VV = merged
@@ -688,8 +693,10 @@ func (e *Engine) conflict(id string, l, r Entry, res *Result) error {
 	if err := e.lockedWrite(win.Path, winContent); err != nil {
 		return err
 	}
+	res.AppliedPaths = append(res.AppliedPaths, win.Path)
 	if l.Path != "" && l.Path != win.Path {
 		_ = e.lockedTrash(l.Path)
+		res.AppliedPaths = append(res.AppliedPaths, l.Path)
 	}
 	e.st.Manifest[id] = Entry{
 		WeftID: id, Path: win.Path, VV: merged, BlobID: win.BlobID,

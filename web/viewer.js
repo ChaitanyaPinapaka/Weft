@@ -390,4 +390,17 @@
   }
 
   load().then(loadSurface);
+
+  // Live reload when the open note changes on disk (capture, rename, sync pull).
+  // The viewer is read-only, so reloading is always safe — no unsaved state.
+  (function subscribeChanges() {
+    if (!path || typeof EventSource === 'undefined') return;
+    let es;
+    try { es = new EventSource('/api/surface/stream'); } catch (e) { return; }
+    es.addEventListener('changed', (e) => {
+      let d;
+      try { d = JSON.parse(e.data); } catch (_) { return; }
+      if (d && d.path === path) location.reload();
+    });
+  })();
 })();

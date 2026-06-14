@@ -26,7 +26,7 @@ import (
 // The vault key is unwrapped from the local keyfile using WEFT_PASSPHRASE; the
 // key is held only in memory, never re-persisted. Interval defaults to 30s,
 // overridable via WEFT_SYNC_INTERVAL (a Go duration, e.g. "10s").
-func startAutoSync(v *vault.Vault, ix *index.Index, emb embed.Embedder) {
+func startAutoSync(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub) {
 	if !syncpkg.Configured(v) {
 		return
 	}
@@ -56,16 +56,16 @@ func startAutoSync(v *vault.Vault, ix *index.Index, emb embed.Embedder) {
 	fmt.Printf("Sync  on — converging every %s\n", interval)
 
 	go func() {
-		syncOnce(eng, v, ix, emb) // converge once at startup
+		syncOnce(eng, v, ix, emb, hub) // converge once at startup
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for range t.C {
-			syncOnce(eng, v, ix, emb)
+			syncOnce(eng, v, ix, emb, hub)
 		}
 	}()
 }
 
-func syncOnce(eng *syncpkg.Engine, v *vault.Vault, ix *index.Index, emb embed.Embedder) {
+func syncOnce(eng *syncpkg.Engine, v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub) {
 	res, err := eng.Sync()
 	if err != nil {
 		fmt.Printf("sync: %v\n", err)
@@ -74,6 +74,16 @@ func syncOnce(eng *syncpkg.Engine, v *vault.Vault, ix *index.Index, emb embed.Em
 	// Pulled changes wrote new .html; re-derive the index (incremental via Stale).
 	if res.Applied > 0 || len(res.ConflictCopies) > 0 {
 		_ = indexAll(v, ix, emb)
+		// Tell open clients which notes changed so they reload/warn instead of
+		// holding (and later clobbering) a stale buffer.
+		if hub != nil {
+			for _, p := range res.AppliedPaths {
+				hub.changed(p)
+			}
+			for _, p := range res.ConflictCopies {
+				hub.changed(p)
+			}
+		}
 		fmt.Printf("sync: applied %d, conflicts %d\n", res.Applied, len(res.ConflictCopies))
 	}
 }

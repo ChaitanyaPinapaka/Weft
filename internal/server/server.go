@@ -71,12 +71,15 @@ func Run(vaultPath string) error {
 	// Live, runtime-tunable surfacing weights (persisted in the index).
 	ps := newParamStore(ix)
 
-	// If sync is configured, converge through the E2EE bucket in the background.
-	startAutoSync(v, ix, emb)
-
-	// Proactive surfacing: push "what's worth resurfacing now" to connected
-	// surfaces (the macOS app) over SSE. No-op until a client subscribes.
+	// Proactive surfacing + change notifications: push "what's worth resurfacing
+	// now" AND "this note changed on disk" to connected surfaces (macOS app, web
+	// editor/viewer) over SSE. No-op until a client subscribes.
 	hub := newAmbientHub()
+
+	// If sync is configured, converge through the E2EE bucket in the background;
+	// the hub lets it tell open clients which pulled notes to reload.
+	startAutoSync(v, ix, emb, hub)
+
 	startAmbientSurfacer(hub, v, ix, ps)
 
 	mux := http.NewServeMux()
@@ -100,12 +103,12 @@ func Run(vaultPath string) error {
 	tomb := newTrashTombstones()
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb, tomb))
 	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix, tomb))
-	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb, hub))
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
-	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
 	mux.HandleFunc("GET /api/params", getParamsHandler(ps))
@@ -490,7 +493,7 @@ func graphRedirectHandler() http.HandlerFunc {
 
 // captureHandler accepts `POST /api/capture` with `{text}` and appends to
 // today's daily note (creating it if missing). Same engine as `weft capture`.
-func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
@@ -530,6 +533,9 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 			updateEmbedding(ix, emb, rel, t+"\n"+txt)
 		}
 		v.Unlock(rel)
+		// Tell any open editor/reader of this daily note to reload — the capture
+		// landed out of band and must not be clobbered by a stale autosave.
+		hub.changed(rel)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}
@@ -543,7 +549,7 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 // Why both in the body (not in the URL): Go's ServeMux requires `{...}`
 // wildcards at the end of the pattern, which can't express two arbitrary
 // vault-relative paths in one route.
-func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			From string `json:"from"`
@@ -609,32 +615,51 @@ func renameHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Han
 		})
 		updateEmbedding(ix, emb, newRel, title+"\n"+text)
 
-		// Rewrite any anchors across the vault that pointed at oldRel.
+		// Rewrite any anchors across the vault that pointed at oldRel. Each linking
+		// note gets its own path lock for the read-modify-write (R2), and a
+		// changed event so an open editor of it reloads the new href (R3).
+		rewritten := []string{}
 		notes, _ := v.List()
 		for _, n := range notes {
 			if n.Path == newRel {
 				continue
 			}
-			c, err := v.Read(n.Path)
-			if err != nil {
-				continue
-			}
-			updated, changed := rewriteHrefInDoc(c, oldRel, newRel)
-			if !changed {
-				continue
-			}
-			if err := v.Write(n.Path, updated); err != nil {
-				continue
-			}
-			t, b := extractTitleBody(updated)
-			_ = ix.Upsert(index.Note{
-				Path:    n.Path,
-				Title:   t,
-				Body:    b,
-				Links:   index.ParseLinks(updated),
-				ModTime: time.Now(),
-				Size:    int64(len(updated)),
-			})
+			func() {
+				v.Lock(n.Path)
+				defer v.Unlock(n.Path)
+				c, err := v.Read(n.Path)
+				if err != nil {
+					return
+				}
+				updated, changed := rewriteHrefInDoc(c, oldRel, newRel)
+				if !changed {
+					return
+				}
+				if err := v.Write(n.Path, updated); err != nil {
+					return
+				}
+				t, b := extractTitleBody(updated)
+				mt := time.Now()
+				if m, err := v.ModTime(n.Path); err == nil {
+					mt = m
+				}
+				_ = ix.Upsert(index.Note{
+					Path:    n.Path,
+					Title:   t,
+					Body:    b,
+					Links:   index.ParseLinks(updated),
+					ModTime: mt,
+					Size:    int64(len(updated)),
+				})
+				rewritten = append(rewritten, n.Path)
+			}()
+		}
+
+		// Notify open clients: the note moved, and any note whose links we rewrote.
+		hub.changed(oldRel)
+		hub.changed(newRel)
+		for _, p := range rewritten {
+			hub.changed(p)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
