@@ -13,6 +13,16 @@ import Placeholder   from 'https://esm.sh/@tiptap/extension-placeholder@2';
 import TaskList      from 'https://esm.sh/@tiptap/extension-task-list@2';
 import TaskItem      from 'https://esm.sh/@tiptap/extension-task-item@2';
 import Suggestion    from 'https://esm.sh/@tiptap/suggestion@2';
+import { PluginKey } from 'https://esm.sh/@tiptap/pm@2/state';
+
+// Distinct ProseMirror plugin keys for our two Suggestion-based extensions.
+// @tiptap/suggestion otherwise defaults both to its shared module-level
+// SuggestionPluginKey, and ProseMirror rejects two plugins under one key with
+// "Adding different instances of a keyed plugin" — which throws inside
+// `new Editor(...)` and aborts the whole editor module (no load, no autosave).
+// Keys come from @tiptap/pm so they're the same ProseMirror instance TipTap uses.
+const WIKILINK_SUGGESTION_KEY = new PluginKey('weftWikilinkSuggestion');
+const SLASH_COMMANDS_KEY      = new PluginKey('weftSlashCommands');
 
 const params = new URLSearchParams(location.search);
 const path = params.get('path') || '';
@@ -305,7 +315,12 @@ const WikilinkSuggestion = Extension.create({
     };
   },
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...this.options.suggestion })];
+    // Distinct pluginKey: both this and SlashCommands build on @tiptap/suggestion,
+    // which defaults to the ProseMirror plugin key "suggestion$". Two plugins
+    // sharing one key makes ProseMirror throw "Adding different instances of a
+    // keyed plugin" during editor construction, aborting the whole module
+    // (no content load, no autosave). A unique key per plugin avoids the clash.
+    return [Suggestion({ editor: this.editor, pluginKey: WIKILINK_SUGGESTION_KEY, ...this.options.suggestion })];
   },
 });
 
@@ -397,7 +412,7 @@ const SlashCommands = Extension.create({
     };
   },
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...this.options.suggestion })];
+    return [Suggestion({ editor: this.editor, pluginKey: SLASH_COMMANDS_KEY, ...this.options.suggestion })];
   },
 });
 

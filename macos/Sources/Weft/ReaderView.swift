@@ -22,12 +22,11 @@ struct ReaderView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onNavigate: onNavigate) }
 
     func makeNSView(context: Context) -> WKWebView {
-        // The reader only renders static note HTML — it needs no scripting.
-        // Disabling JS neutralizes any active content that reached the vault
-        // via sync from another device (decrypted bytes are written verbatim).
-        let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let web = WKWebView(frame: .zero, configuration: config)
+        // JS is toggled PER NAVIGATION in the delegate below: ON for the editor
+        // (/edit/ — TipTap needs it), OFF for the reader (static note HTML, so
+        // disabling JS neutralizes any active content that arrived via sync).
+        // A global config-level disable would also kill the shared editor.
+        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         web.navigationDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = false
         // Hand the model a reference so it can drive the editor's save/stop
@@ -67,22 +66,27 @@ struct ReaderView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor action: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     preferences: WKWebpagePreferences,
+                     decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+            // Editor pages need JavaScript (TipTap); the static reader does not,
+            // so script in synced note HTML never runs there. Scoped per load
+            // because the reader and editor share this one web view.
+            preferences.allowsContentJavaScript = editing
             guard action.navigationType == .linkActivated, let url = action.request.url else {
                 // The initial loadHTMLString / programmatic /edit/ load, the
                 // editor's 302 + asset loads, and in-page anchors.
-                decisionHandler(.allow)
+                decisionHandler(.allow, preferences)
                 return
             }
             if let notePath = weftVaultPath(from: url) {
-                decisionHandler(.cancel)
+                decisionHandler(.cancel, preferences)
                 onNavigate(notePath)
             } else if editing, isWeftDaemon(url) {
                 // Editor-internal navigation (home, /notes, …) stays hosted; a
                 // note click on any of those pages is caught by the branch above.
-                decisionHandler(.allow)
+                decisionHandler(.allow, preferences)
             } else {
-                decisionHandler(.cancel)
+                decisionHandler(.cancel, preferences)
                 NSWorkspace.shared.open(url)
             }
         }
