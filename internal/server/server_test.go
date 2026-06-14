@@ -325,3 +325,34 @@ func TestWithCORSMutatingAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// TestMutatingOriginLoopbackAliases guards the save-broke-via-127.0.0.1
+// regression: the daemon binds "localhost:7777" but a browser may address it
+// under any loopback alias, and all must be allowed to POST/DELETE.
+func TestMutatingOriginLoopbackAliases(t *testing.T) {
+	allow := []string{
+		"http://localhost:7777",
+		"http://127.0.0.1:7777",
+		"http://[::1]:7777",
+		"chrome-extension://abc",
+		"moz-extension://abc",
+	}
+	deny := []string{
+		"http://localhost:8080",    // wrong port
+		"http://127.0.0.1:9999",    // wrong port
+		"https://localhost:7777",   // not http (no https surface)
+		"http://evil.example:7777", // non-loopback host
+		"http://localhost",         // no port
+		"",                         // no origin (handled separately, not "allowed")
+	}
+	for _, o := range allow {
+		if !mutatingOriginAllowed(o) {
+			t.Errorf("origin %q should be allowed", o)
+		}
+	}
+	for _, o := range deny {
+		if mutatingOriginAllowed(o) {
+			t.Errorf("origin %q should be denied", o)
+		}
+	}
+}

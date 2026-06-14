@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,9 +190,27 @@ func withCORS(next http.Handler) http.Handler {
 // own pages, nothing else. Non-browser clients (CLI, native apps) send no
 // Origin header and are untouched by CORS anyway.
 func mutatingOriginAllowed(origin string) bool {
-	return strings.HasPrefix(origin, "chrome-extension://") ||
-		strings.HasPrefix(origin, "moz-extension://") ||
-		origin == "http://"+addr
+	if strings.HasPrefix(origin, "chrome-extension://") ||
+		strings.HasPrefix(origin, "moz-extension://") {
+		return true
+	}
+	// The daemon's own pages. A browser may reach localhost:7777 under any
+	// loopback alias (localhost, 127.0.0.1, [::1]) — they're the same single-user
+	// host, so accept them all on the daemon's port. Matching only the literal
+	// "localhost" string 403'd every save when the tab was opened via 127.0.0.1.
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || u.Port() != port {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 func listHandler(v *vault.Vault) http.HandlerFunc {
