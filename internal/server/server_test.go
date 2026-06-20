@@ -407,6 +407,45 @@ func TestExtractTasks(t *testing.T) {
 	}
 }
 
+// TestTasksAPI: saving a note with mixed tasks makes GET /api/tasks return only
+// the unchecked ones, in document order, with the note title joined.
+func TestTasksAPI(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	save := saveHandler(v, ix, nil, newTrashTombstones())
+	body := `<article><h1>Chores</h1><ul data-type="taskList">` +
+		`<li data-type="taskItem" data-checked="false">Open one</li>` +
+		`<li data-type="taskItem" data-checked="true">Closed</li>` +
+		`<li data-type="taskItem" data-checked="false">Open two</li></ul></article>`
+	req := httptest.NewRequest(http.MethodPost, "/api/note/chores.html", strings.NewReader(body))
+	req.SetPathValue("path", "chores.html")
+	rr := httptest.NewRecorder()
+	save(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("save: want 204, got %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	h := tasksHandler(ix)
+	req = httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tasks: want 200, got %d", rr.Code)
+	}
+	var got []index.Task
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 open tasks, got %d (%+v)", len(got), got)
+	}
+	if got[0].Text != "Open one" || got[1].Text != "Open two" {
+		t.Fatalf("order/text wrong: %+v", got)
+	}
+	if got[0].NoteTitle != "Chores" {
+		t.Fatalf("note title not joined: %q", got[0].NoteTitle)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {

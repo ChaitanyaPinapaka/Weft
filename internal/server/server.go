@@ -107,6 +107,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/daily", dailyHandler(v, ix, emb))
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
+	mux.HandleFunc("GET /api/tasks", tasksHandler(ix))
 	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
@@ -404,6 +405,20 @@ func tagsHandler(ix *index.Index) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tags)
+	}
+}
+
+// tasksHandler serves every unchecked task across the vault as JSON — the data
+// behind the /web/tasks.html open-tasks view.
+func tasksHandler(ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tasks, err := ix.AllTasks()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tasks)
 	}
 }
 

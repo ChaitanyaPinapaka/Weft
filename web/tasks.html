@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft — Tasks</title>
+<link rel="stylesheet" href="/web/viewer.css">
+<style>
+  /* Standalone column — this page has no brain panel, so it doesn't use the
+     two-column .shell/.reader layout the viewer does. */
+  main.tasks-main { max-width: 720px; margin: 0 auto; padding: 0 16px 64px; }
+  .tasks-h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  .tasks-count { color: var(--muted); font-size: 0.85rem; font-weight: 400; font-family: ui-monospace, monospace; }
+  .tasks-note { margin: 0 0 22px; }
+  .tasks-note-title a { color: var(--text); text-decoration: none; font-weight: 600; font-size: 0.95rem; }
+  .tasks-note-title a:hover { color: var(--accent); }
+  .tasks-list { margin: 6px 0 0; padding-left: 22px; }
+  .tasks-list li { margin: 3px 0; line-height: 1.5; }
+  .tasks-status { color: var(--muted); margin-top: 24px; }
+</style>
+</head>
+<body>
+<header>
+  <a class="home" href="/">Weft</a>
+  <span class="vault-path">open tasks</span>
+  <a class="notes-link" href="/notes">notes</a>
+</header>
+
+<main class="tasks-main">
+  <h1 class="tasks-h1">Open tasks <span class="tasks-count" id="count"></span></h1>
+  <div id="tasks"></div>
+  <div id="status" class="tasks-status">loading…</div>
+</main>
+
+<script src="/web/tasks.js" defer></script>
+</body>
+</html>
