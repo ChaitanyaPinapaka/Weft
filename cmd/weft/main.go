@@ -24,6 +24,7 @@ import (
 	"weft/internal/server"
 	syncpkg "weft/internal/sync"
 	"weft/internal/vault"
+	"weft/internal/weaver"
 )
 
 const usage = `Weft — HTML vault with brain memory.
@@ -37,6 +38,8 @@ Usage:
                              kinds: markdown notion bookmarks apple-notes
                              flags: --force (overwrite existing notes)
                                     -v <vault>
+  weft weave                 propose wikilinks: digest of unlinked-but-similar notes
+                             writes digests/YYYY-MM-DD.html (never edits your notes)
   weft sync init             set up E2EE multi-device sync on your own cloud
   weft sync join             enroll this device with the shared passphrase
   weft sync pair             enroll this device from another one (no passphrase)
@@ -100,6 +103,12 @@ func main() {
 
 	case "import":
 		if err := runImport(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+	case "weave":
+		if err := runWeave(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -254,6 +263,50 @@ func runMCP(args []string) error {
 
 	srv := mcp.New(v, ix)
 	return srv.Serve(ctx)
+}
+
+// runWeave parses `weft weave [-v <vault>]`, opens the vault + index, and writes
+// today's link-proposal digest (idempotent; never edits notes). Designed to be
+// runnable by hand now and from a scheduler/daemon later.
+func runWeave(args []string) error {
+	vaultPath := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-v", "--vault":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			vaultPath = args[i+1]
+			i++
+		default:
+			if vaultPath == "" {
+				vaultPath = args[i]
+			}
+		}
+	}
+	v, err := vault.New(resolveVault(vaultPath))
+	if err != nil {
+		return err
+	}
+	ix, err := index.Open(v.Root)
+	if err != nil {
+		return fmt.Errorf("index: %w", err)
+	}
+	defer ix.Close()
+
+	path, n, wrote, err := weaver.GenerateDigest(v, ix, time.Now())
+	if err != nil {
+		return err
+	}
+	switch {
+	case wrote:
+		fmt.Printf("weave: %d link proposals -> %s\n", n, path)
+	case v.Exists(path):
+		fmt.Printf("weave: today's digest already exists (%s); not overwriting\n", path)
+	default:
+		fmt.Println("weave: no new link proposals (need local embeddings; build with `make build-ort`)")
+	}
+	return nil
 }
 
 // resolveVault picks the vault path from the flag value, the WEFT_VAULT env
