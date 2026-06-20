@@ -175,6 +175,28 @@ func startAmbientSurfacer(h *ambientHub, v *vault.Vault, ix *index.Index, ps *pa
 	}()
 }
 
+// startLearnedEdgeDecayer periodically resets reinforcement edges not followed
+// in a long while back to baseline (the 90-day timeout-to-baseline model). Decay
+// is slow-moving, so it runs on a calm ticker; it also sweeps once at startup so
+// a long-idle daemon doesn't carry stale boosts forward.
+func startLearnedEdgeDecayer(ix *index.Index) {
+	const horizon = 90 * 24 * time.Hour
+	const interval = 6 * time.Hour
+	sweep := func() {
+		if err := ix.DecayOldEdges(time.Now().Add(-horizon).Unix()); err != nil {
+			fmt.Printf("learned-edge decay: %v\n", err)
+		}
+	}
+	sweep()
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			sweep()
+		}
+	}()
+}
+
 // pickSurfaceEvent seeds the focus from the latest access and runs the engine,
 // then delegates the choice to selectSuggestion. Returns ok=false when there is
 // no session yet or nothing worth surfacing.

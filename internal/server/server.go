@@ -81,6 +81,7 @@ func Run(vaultPath string) error {
 	startAutoSync(v, ix, emb, hub)
 
 	startAmbientSurfacer(hub, v, ix, ps)
+	startLearnedEdgeDecayer(ix)
 
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
