@@ -348,11 +348,32 @@ func editRedirectHandler() http.HandlerFunc {
 	}
 }
 
-// dailyRedirectHandler ensures today's daily exists (using the template if
-// daily/template.html is present) and 302s to /note/{path}.
+// dailyDate resolves the target daily date from an optional ?date=YYYY-MM-DD
+// query param, defaulting to today. ok=false means the param was present but
+// malformed, so the caller should 400 rather than silently land on today.
+func dailyDate(r *http.Request) (day time.Time, ok bool) {
+	q := r.URL.Query().Get("date")
+	if q == "" {
+		return time.Now(), true
+	}
+	t, err := time.ParseInLocation("2006-01-02", q, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// dailyRedirectHandler ensures the requested day's daily exists (today by
+// default, or ?date=YYYY-MM-DD; using the template if daily/template.html is
+// present) and 302s to /note/{path}.
 func dailyRedirectHandler(v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rel, err := v.EnsureDailyFromTemplate(time.Now())
+		day, ok := dailyDate(r)
+		if !ok {
+			http.Error(w, "invalid date (want YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		rel, err := v.EnsureDailyFromTemplate(day)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1001,7 +1022,12 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, tomb *tras
 
 func dailyHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rel, err := v.EnsureDailyFromTemplate(time.Now())
+		day, ok := dailyDate(r)
+		if !ok {
+			http.Error(w, "invalid date (want YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		rel, err := v.EnsureDailyFromTemplate(day)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -270,6 +270,27 @@ header .notes-link {
   flex-shrink: 0;
 }
 header .notes-link:hover { color: var(--text); }
+/* Daily navigation: a quiet "today" link + a compact date picker that jumps to
+   any day's daily note. Both sit between the notes link and the view link. */
+header .daily-link {
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+header .daily-link:hover { color: var(--text); }
+header .daily-date {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 5px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+header .daily-date:hover { color: var(--text); }
 header .status {
   font-size: 0.75rem;
   color: var(--muted);

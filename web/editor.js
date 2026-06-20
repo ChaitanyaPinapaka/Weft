@@ -90,6 +90,30 @@ if (path && viewLinkEl) {
   viewLinkEl.hidden = false;
 }
 
+// Daily-note navigation: "today" and the date picker both open the daily for
+// the chosen day in the editor. The daemon creates it from the template if it
+// doesn't exist yet (/api/daily?date=YYYY-MM-DD), then we land on /edit.
+const dailyDateEl = document.getElementById('daily-date');
+const dailyLinkEl = document.getElementById('daily-link');
+async function openDaily(dateStr) {
+  try {
+    const q = dateStr ? ('?date=' + encodeURIComponent(dateStr)) : '';
+    const res = await fetch('/api/daily' + q);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && data.path) location.href = '/edit/' + data.path;
+  } catch (e) { /* offline: leave the user where they are */ }
+}
+if (dailyDateEl) {
+  // Seed the picker with the open note's own date when it is itself a daily.
+  const m = path.match(/daily\/(\d{4}-\d{2}-\d{2})\.html$/);
+  if (m) dailyDateEl.value = m[1];
+  dailyDateEl.addEventListener('change', () => { if (dailyDateEl.value) openDaily(dailyDateEl.value); });
+}
+if (dailyLinkEl) {
+  dailyLinkEl.addEventListener('click', (e) => { e.preventDefault(); openDaily(''); });
+}
+
 let saveTimer = null;
 let inflight = false;
 let pending = false;

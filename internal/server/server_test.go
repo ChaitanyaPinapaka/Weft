@@ -305,6 +305,55 @@ func TestSaveHandlerIfMatch(t *testing.T) {
 	}
 }
 
+// TestDailyHandlerDateParam: GET /api/daily?date=YYYY-MM-DD creates/returns that
+// day's daily; a malformed date is a 400 (not silently coerced); no date param
+// falls back to today.
+func TestDailyHandlerDateParam(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	h := dailyHandler(v, ix, nil)
+
+	get := func(query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/daily"+query, nil)
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+	var resp struct {
+		Path string `json:"path"`
+	}
+
+	// Explicit past date is created and returned.
+	rr := get("?date=2026-01-15")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("date param: want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Path != "daily/2026-01-15.html" {
+		t.Fatalf("path = %q, want daily/2026-01-15.html", resp.Path)
+	}
+	if !v.Exists("daily/2026-01-15.html") {
+		t.Fatal("daily for the requested date was not created")
+	}
+
+	// Malformed date is rejected, not coerced to today.
+	if rr := get("?date=15-01-2026"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed date: want 400, got %d", rr.Code)
+	}
+
+	// No date param falls back to today.
+	today := time.Now().Format("2006-01-02")
+	rr = get("")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("no date: want 200, got %d", rr.Code)
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.Path != "daily/"+today+".html" {
+		t.Fatalf("no date path = %q, want daily/%s.html", resp.Path, today)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {
