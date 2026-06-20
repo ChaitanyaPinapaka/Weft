@@ -354,6 +354,59 @@ func TestDailyHandlerDateParam(t *testing.T) {
 	}
 }
 
+// TestExtractTasks: parse TipTap task markup (simple, wrapped, nested, none).
+func TestExtractTasks(t *testing.T) {
+	equal := func(a, b []index.TaskItem) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+	cases := []struct {
+		name string
+		html string
+		want []index.TaskItem
+	}{
+		{
+			name: "simple unchecked + checked",
+			html: `<article><ul data-type="taskList">` +
+				`<li data-type="taskItem" data-checked="false">Buy milk</li>` +
+				`<li data-type="taskItem" data-checked="true">Ship it</li></ul></article>`,
+			want: []index.TaskItem{{Text: "Buy milk"}, {Text: "Ship it", Checked: true}},
+		},
+		{
+			name: "tiptap label/input/div wrapper",
+			html: `<ul data-type="taskList"><li data-type="taskItem" data-checked="false">` +
+				`<label><input type="checkbox"><span></span></label><div><p>Write tests</p></div></li></ul>`,
+			want: []index.TaskItem{{Text: "Write tests"}},
+		},
+		{
+			name: "nested subtask: parent text excludes child; both captured",
+			html: `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><div><p>Parent</p></div>` +
+				`<ul data-type="taskList"><li data-type="taskItem" data-checked="true"><div><p>Child</p></div></li></ul>` +
+				`</li></ul>`,
+			want: []index.TaskItem{{Text: "Parent"}, {Text: "Child", Checked: true}},
+		},
+		{
+			name: "no tasks",
+			html: `<article><p>prose</p><ul><li>plain item</li></ul></article>`,
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractTasks([]byte(tc.html)); !equal(got, tc.want) {
+				t.Fatalf("extractTasks =\n  %+v\nwant\n  %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {

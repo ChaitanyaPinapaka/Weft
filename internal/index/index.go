@@ -31,6 +31,22 @@ type Hit struct {
 	Score   float64
 }
 
+// TaskItem is one task checkbox parsed from a note body, in document order.
+// The caller pre-parses the HTML; the index just stores position + state.
+type TaskItem struct {
+	Text    string
+	Checked bool
+}
+
+// Task is an unchecked task surfaced in the cross-vault open-tasks view, carrying
+// its note path/title so the view can group and link without a second lookup.
+type Task struct {
+	Path      string `json:"path"`
+	ItemIdx   int    `json:"item_idx"`
+	Text      string `json:"text"`
+	NoteTitle string `json:"note_title"`
+}
+
 type Index struct {
 	db *sql.DB
 }
@@ -69,6 +85,14 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS tasks (
+  path     TEXT NOT NULL,
+  item_idx INTEGER NOT NULL,
+  text     TEXT,
+  checked  INTEGER NOT NULL,
+  PRIMARY KEY (path, item_idx)
+);
+CREATE INDEX IF NOT EXISTS tasks_checked ON tasks(checked);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -201,6 +225,7 @@ func (ix *Index) Delete(path string) error {
 		`DELETE FROM backlinks WHERE src = ?`,
 		`DELETE FROM embeddings WHERE path = ?`,
 		`DELETE FROM tags WHERE path = ?`,
+		`DELETE FROM tasks WHERE path = ?`,
 	} {
 		if _, err := tx.Exec(q, path); err != nil {
 			return err
@@ -228,12 +253,65 @@ func (ix *Index) Remove(path string) error {
 		`DELETE FROM backlinks WHERE dst = ?`,
 		`DELETE FROM embeddings WHERE path = ?`,
 		`DELETE FROM tags WHERE path = ?`,
+		`DELETE FROM tasks WHERE path = ?`,
 	} {
 		if _, err := tx.Exec(q, path); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// UpsertTasks replaces all task rows for a note with the given items in document
+// order (item_idx = position). Called on every save: clear, then reinsert. A nil
+// or empty slice clears the note's tasks. Task state is canonical in the note
+// HTML; this table is only a fast index for the cross-vault open-tasks view.
+func (ix *Index) UpsertTasks(path string, tasks []TaskItem) error {
+	tx, err := ix.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM tasks WHERE path = ?`, path); err != nil {
+		return err
+	}
+	for i, t := range tasks {
+		checked := 0
+		if t.Checked {
+			checked = 1
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO tasks(path, item_idx, text, checked) VALUES(?, ?, ?, ?)`,
+			path, i, t.Text, checked,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// AllTasks returns every UNCHECKED task across the vault, joined to its note
+// title, ordered by path then position — the data behind the open-tasks view.
+func (ix *Index) AllTasks() ([]Task, error) {
+	rows, err := ix.db.Query(`
+		SELECT t.path, t.item_idx, t.text, COALESCE(n.title, '')
+		  FROM tasks t
+		  LEFT JOIN notes n ON n.path = t.path
+		 WHERE t.checked = 0
+		 ORDER BY t.path, t.item_idx`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Task
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(&t.Path, &t.ItemIdx, &t.Text, &t.NoteTitle); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // ftsMatchQuery turns a raw user query into a safe FTS5 MATCH expression.

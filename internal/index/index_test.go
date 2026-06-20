@@ -66,6 +66,56 @@ func TestUpsertAndSearch(t *testing.T) {
 	}
 }
 
+func TestTasksRoundtrip(t *testing.T) {
+	ix := newIndex(t)
+	now := time.Now()
+	// Note title comes from the notes table via the join, so seed it.
+	if err := ix.Upsert(Note{Path: "todo.html", Title: "My TODOs", Body: "x", ModTime: now, Size: 1}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := ix.UpsertTasks("todo.html", []TaskItem{
+		{Text: "First task", Checked: false},
+		{Text: "Done task", Checked: true},
+		{Text: "Second task", Checked: false},
+	}); err != nil {
+		t.Fatalf("UpsertTasks: %v", err)
+	}
+
+	all, err := ix.AllTasks()
+	if err != nil {
+		t.Fatalf("AllTasks: %v", err)
+	}
+	// Only the two unchecked tasks, document order, item_idx preserved, title joined.
+	if len(all) != 2 {
+		t.Fatalf("AllTasks: want 2 unchecked, got %d (%+v)", len(all), all)
+	}
+	if all[0].Text != "First task" || all[1].Text != "Second task" {
+		t.Fatalf("order/text wrong: %+v", all)
+	}
+	if all[0].ItemIdx != 0 || all[1].ItemIdx != 2 {
+		t.Fatalf("item_idx wrong: %+v", all)
+	}
+	if all[0].NoteTitle != "My TODOs" {
+		t.Fatalf("note title not joined: %q", all[0].NoteTitle)
+	}
+
+	// Re-upsert replaces (no stale rows left behind).
+	if err := ix.UpsertTasks("todo.html", []TaskItem{{Text: "Only one", Checked: false}}); err != nil {
+		t.Fatalf("UpsertTasks replace: %v", err)
+	}
+	if all, _ := ix.AllTasks(); len(all) != 1 || all[0].Text != "Only one" {
+		t.Fatalf("replace failed: %+v", all)
+	}
+
+	// Clearing with nil removes the note's rows.
+	if err := ix.UpsertTasks("todo.html", nil); err != nil {
+		t.Fatalf("UpsertTasks clear: %v", err)
+	}
+	if all, _ := ix.AllTasks(); len(all) != 0 {
+		t.Fatalf("clear failed: %+v", all)
+	}
+}
+
 func TestSearchHandlesFTSMetacharacters(t *testing.T) {
 	// Raw queries used to be passed straight to MATCH, so ordinary input with
 	// FTS5 operator chars raised a syntax error (surfaced as HTTP 500). These

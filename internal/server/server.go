@@ -1014,6 +1014,10 @@ func saveHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, tomb *tras
 			fmt.Printf("save: index upsert %s: %v (heals on next reindex)\n", rel, err)
 		}
 		updateEmbedding(ix, emb, rel, title+"\n"+body)
+		// Index task checkboxes (replace-on-save) for the cross-vault tasks view.
+		if err := ix.UpsertTasks(rel, extractTasks(content)); err != nil {
+			fmt.Printf("save: index task upsert %s: %v (heals on next reindex)\n", rel, err)
+		}
 		// Return the new baseline so the editor can keep saving without a reload.
 		w.Header().Set("ETag", etag(content))
 		w.WriteHeader(http.StatusNoContent)
@@ -1098,6 +1102,11 @@ func indexAll(v *vault.Vault, ix *index.Index, emb embed.Embedder) error {
 			return err
 		}
 		updateEmbedding(ix, emb, n.Path, title+"\n"+body)
+		// Populate the tasks index for existing notes on (re)index so the
+		// open-tasks view works without re-saving every note first.
+		if err := ix.UpsertTasks(n.Path, extractTasks(content)); err != nil {
+			return err
+		}
 	}
 
 	// Orphan sweep: the loop above only ever upserts, so without this a note
@@ -1389,6 +1398,66 @@ func textOf(n *gohtml.Node) string {
 	}
 	walk(n)
 	return sb.String()
+}
+
+// attrVal returns the value of n's named attribute, or "" if absent.
+func attrVal(n *gohtml.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+// extractTasks parses TipTap task items from a note's HTML in document order.
+// Markup: <ul data-type="taskList"><li data-type="taskItem" data-checked="true|false">…</li></ul>.
+// Each item's text is its own text content with any nested sub-task list excluded
+// (nested items are captured as their own entries). Returns nil when there are
+// none. Keyed downstream by position (item_idx), so order is the contract.
+func extractTasks(content []byte) []index.TaskItem {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return nil
+	}
+	var out []index.TaskItem
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode && n.Data == "li" && attrVal(n, "data-type") == "taskItem" {
+			out = append(out, index.TaskItem{
+				Text:    taskItemText(n),
+				Checked: attrVal(n, "data-checked") == "true",
+			})
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return out
+}
+
+// taskItemText returns a task item's own text, excluding any nested task list
+// (whose items are captured separately). Whitespace is collapsed.
+func taskItemText(li *gohtml.Node) string {
+	var sb strings.Builder
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode && n.Data == "ul" && attrVal(n, "data-type") == "taskList" {
+			return // nested sub-tasks are their own entries
+		}
+		if n.Type == gohtml.TextNode {
+			sb.WriteString(n.Data)
+			sb.WriteByte(' ')
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	for c := li.FirstChild; c != nil; c = c.NextSibling {
+		walk(c)
+	}
+	return strings.Join(strings.Fields(sb.String()), " ")
 }
 
 func openBrowser(url string) {
