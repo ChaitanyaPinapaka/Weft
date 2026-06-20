@@ -116,6 +116,42 @@ func TestTasksRoundtrip(t *testing.T) {
 	}
 }
 
+func TestLearnedEdges(t *testing.T) {
+	ix := newIndex(t)
+	const now = int64(1_000_000)
+
+	// Unknown edge defaults to neutral 1.0.
+	if w := ix.GetLearnedWeight("a.html", "b.html"); w != 1.0 {
+		t.Fatalf("default weight = %v, want 1.0", w)
+	}
+
+	// One click nudges the weight up by the multiplier (~1.05).
+	if err := ix.RecordEdgeClick("a.html", "b.html", now); err != nil {
+		t.Fatal(err)
+	}
+	if w := ix.GetLearnedWeight("a.html", "b.html"); w <= 1.0 || w > 1.1 {
+		t.Fatalf("after one click weight = %v, want ~1.05", w)
+	}
+
+	// Many clicks saturate at the upper clamp (2.0), never beyond.
+	for i := 0; i < 100; i++ {
+		if err := ix.RecordEdgeClick("a.html", "b.html", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := ix.GetLearnedWeight("a.html", "b.html"); w != 2.0 {
+		t.Fatalf("saturated weight = %v, want 2.0", w)
+	}
+
+	// Decay sweeps edges untouched since the cutoff back to baseline.
+	if err := ix.DecayOldEdges(now + 1); err != nil {
+		t.Fatal(err)
+	}
+	if w := ix.GetLearnedWeight("a.html", "b.html"); w != 1.0 {
+		t.Fatalf("after decay weight = %v, want 1.0 (baseline)", w)
+	}
+}
+
 func TestSearchHandlesFTSMetacharacters(t *testing.T) {
 	// Raw queries used to be passed straight to MATCH, so ordinary input with
 	// FTS5 operator chars raised a syntax error (surfaced as HTTP 500). These

@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   PRIMARY KEY (path, item_idx)
 );
 CREATE INDEX IF NOT EXISTS tasks_checked ON tasks(checked);
+CREATE TABLE IF NOT EXISTS learned_edges (
+  src     TEXT NOT NULL,
+  dst     TEXT NOT NULL,
+  weight  REAL NOT NULL,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (src, dst)
+);
+CREATE INDEX IF NOT EXISTS learned_edges_src ON learned_edges(src);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -312,6 +320,56 @@ func (ix *Index) AllTasks() ([]Task, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// Learned edges: per-association weights that reinforcement nudges up when the
+// user clicks a surfaced note, multiplying that edge's strength in scoring.
+// Weights start at and decay back to a neutral baseline; clamped to a sane band
+// so a feedback loop can't let one edge dominate the ranking.
+const (
+	learnedClickMultiplier = 1.05
+	learnedWeightMin       = 0.5
+	learnedWeightMax       = 2.0
+	learnedWeightBaseline  = 1.0
+)
+
+// RecordEdgeClick strengthens the src→dst association: weight = clamp(weight×1.05).
+// A never-seen edge starts from the neutral baseline. updated is stamped so the
+// decay sweep can later time it back out to baseline.
+func (ix *Index) RecordEdgeClick(src, dst string, now int64) error {
+	w := ix.GetLearnedWeight(src, dst) * learnedClickMultiplier
+	if w > learnedWeightMax {
+		w = learnedWeightMax
+	}
+	if w < learnedWeightMin {
+		w = learnedWeightMin
+	}
+	_, err := ix.db.Exec(`
+		INSERT INTO learned_edges(src, dst, weight, updated) VALUES(?, ?, ?, ?)
+		ON CONFLICT(src, dst) DO UPDATE SET weight = excluded.weight, updated = excluded.updated`,
+		src, dst, w, now)
+	return err
+}
+
+// GetLearnedWeight returns the learned multiplier for src→dst, or the neutral
+// baseline (1.0) if the edge has never been reinforced. Cheap single-PK lookup.
+func (ix *Index) GetLearnedWeight(src, dst string) float64 {
+	var w float64
+	if err := ix.db.QueryRow(
+		`SELECT weight FROM learned_edges WHERE src = ? AND dst = ?`, src, dst,
+	).Scan(&w); err != nil {
+		return learnedWeightBaseline
+	}
+	return w
+}
+
+// DecayOldEdges resets to baseline every edge not reinforced since `before` by
+// deleting the row — a baseline-weight row is indistinguishable from absence.
+// This is the "90-day timeout-to-baseline" decay model (no per-impression
+// tracking): an association the user stops following fades back to neutral.
+func (ix *Index) DecayOldEdges(before int64) error {
+	_, err := ix.db.Exec(`DELETE FROM learned_edges WHERE updated < ?`, before)
+	return err
 }
 
 // ftsMatchQuery turns a raw user query into a safe FTS5 MATCH expression.
