@@ -104,6 +104,7 @@ func Run(vaultPath string) error {
 	// Short-lived trash tombstones block a queued save from resurrecting a note
 	// the user just removed (shared by save + trash).
 	tomb := newTrashTombstones()
+	mux.HandleFunc("POST /api/note/new", newNoteHandler(v, ix, emb))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb, tomb))
 	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix, tomb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb, hub))
@@ -519,6 +520,55 @@ func tasksHandler(ix *index.Index) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tasks)
 	}
+}
+
+// newNoteHandler creates a note from a title (slugified to {slug}.html at the
+// vault root, collision-suffixed so it never overwrites) and returns {path}.
+// Powers the command palette's quick-create; the title becomes the note's <h1>.
+func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		title := strings.TrimSpace(r.URL.Query().Get("title"))
+		if title == "" {
+			http.Error(w, "title required", http.StatusBadRequest)
+			return
+		}
+		rel := uniqueNotePath(v, clip.Slug(title))
+		esc := template.HTMLEscapeString(title)
+		body := "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>" + esc +
+			"</title></head>\n<body>\n<article>\n<h1>" + esc + "</h1>\n<p></p>\n</article>\n</body></html>\n"
+		content := prepareNote(v, rel, []byte(body))
+		if err := v.Write(rel, content); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		t, b := extractTitleBody(content)
+		mt := time.Now()
+		if m, err := v.ModTime(rel); err == nil {
+			mt = m
+		}
+		if err := ix.Upsert(index.Note{Path: rel, Title: t, Body: b, Links: index.ParseLinks(content), ModTime: mt, Size: int64(len(content))}); err != nil {
+			fmt.Printf("new note: index upsert %s: %v\n", rel, err)
+		}
+		updateEmbedding(ix, emb, rel, t+"\n"+b)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": rel})
+	}
+}
+
+// uniqueNotePath returns {slug}.html at the vault root, suffixing -2, -3, … on
+// collision so a quick-create never clobbers an existing note.
+func uniqueNotePath(v *vault.Vault, slug string) string {
+	base := slug + ".html"
+	if !v.Exists(base) {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		c := fmt.Sprintf("%s-%d.html", slug, i)
+		if !v.Exists(c) {
+			return c
+		}
+	}
+	return base
 }
 
 func tagHandler(ix *index.Index) http.HandlerFunc {

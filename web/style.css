@@ -310,6 +310,59 @@ header .daily-date:hover { color: var(--text); }
 }
 .brain-preview-title { font-weight: 600; margin-bottom: 4px; }
 .brain-preview-body { color: var(--muted); line-height: 1.45; }
+
+/* Command palette (⌘K): a centered overlay switcher — quiet chrome, keyboard
+   driven, selected row uses a soft surface tint rather than a loud highlight. */
+.cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.cmdk {
+  width: 560px;
+  max-width: 92vw;
+  background: var(--surface, #1c1c1c);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.cmdk-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  padding: 14px 16px;
+  outline: none;
+}
+.cmdk-list { list-style: none; margin: 0; padding: 6px; max-height: 50vh; overflow-y: auto; }
+.cmdk-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cmdk-item.is-sel { background: var(--surface-2, rgba(127, 127, 127, 0.14)); }
+.cmdk-item-title { color: var(--text); font-size: 0.9rem; flex-shrink: 0; }
+.cmdk-item-path {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmdk-create { color: var(--accent); font-weight: 700; }
 header .status {
   font-size: 0.75rem;
   color: var(--muted);

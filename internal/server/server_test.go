@@ -565,6 +565,38 @@ func TestRunnableNoteHandler(t *testing.T) {
 	}
 }
 
+// TestNewNoteHandler: quick-create slugs the title, writes an <h1> note, and
+// collision-suffixes; an empty title is rejected.
+func TestNewNoteHandler(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	h := newNoteHandler(v, ix, nil)
+	create := func(query string) (int, string) {
+		req := httptest.NewRequest(http.MethodPost, "/api/note/new?"+query, nil)
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		var out struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal(rr.Body.Bytes(), &out)
+		return rr.Code, out.Path
+	}
+
+	code, p := create("title=My%20New%20Idea")
+	if code != http.StatusOK || p != "my-new-idea.html" {
+		t.Fatalf("create: code=%d path=%q", code, p)
+	}
+	if body, _ := v.Read(p); !strings.Contains(string(body), "<h1>My New Idea</h1>") {
+		t.Fatalf("title not in body: %s", body)
+	}
+	// Same title again collision-suffixes rather than overwriting.
+	if _, p2 := create("title=My%20New%20Idea"); p2 != "my-new-idea-2.html" {
+		t.Fatalf("collision suffix: got %q", p2)
+	}
+	if code, _ := create("title="); code != http.StatusBadRequest {
+		t.Fatalf("empty title: want 400, got %d", code)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {
