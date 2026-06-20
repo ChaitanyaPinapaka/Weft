@@ -446,6 +446,48 @@ func TestTasksAPI(t *testing.T) {
 	}
 }
 
+// TestSaveReindexesTasks: checking a task off (data-checked true) via the normal
+// save path must drop it from the open-tasks index — the loop the viewer toggle
+// relies on.
+func TestSaveReindexesTasks(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	save := saveHandler(v, ix, nil, newTrashTombstones())
+	raw := rawHandler(v)
+	post := func(ifMatch, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/note/t.html", strings.NewReader(body))
+		req.SetPathValue("path", "t.html")
+		if ifMatch != "" {
+			req.Header.Set("If-Match", ifMatch)
+		}
+		rr := httptest.NewRecorder()
+		save(rr, req)
+		return rr
+	}
+	etag := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/raw/t.html", nil)
+		req.SetPathValue("path", "t.html")
+		rr := httptest.NewRecorder()
+		raw(rr, req)
+		return rr.Header().Get("ETag")
+	}
+
+	open := `<article><h1>T</h1><ul data-type="taskList"><li data-type="taskItem" data-checked="false">Do it</li></ul></article>`
+	if rr := post("", open); rr.Code != http.StatusNoContent {
+		t.Fatalf("save open: want 204, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if all, _ := ix.AllTasks(); len(all) != 1 || all[0].Text != "Do it" {
+		t.Fatalf("after open save: want 1 open task, got %+v", all)
+	}
+
+	done := `<article><h1>T</h1><ul data-type="taskList"><li data-type="taskItem" data-checked="true">Do it</li></ul></article>`
+	if rr := post(etag(), done); rr.Code != http.StatusNoContent {
+		t.Fatalf("save done: want 204, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if all, _ := ix.AllTasks(); len(all) != 0 {
+		t.Fatalf("after checking off: want 0 open tasks, got %+v", all)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {

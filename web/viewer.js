@@ -158,6 +158,75 @@
     // Inject the body fragment, then rewrite links in-place on the live DOM.
     proseEl.innerHTML = root.innerHTML.trim();
     rewriteLinks(proseEl);
+    attachTaskListeners(proseEl);
+  }
+
+  // Task checkboxes: the read-only viewer is where you actually tick things off.
+  // TipTap saves each task as <li data-type="taskItem" data-checked> wrapping a
+  // <label><input type=checkbox>; we make that input live. Toggling persists by
+  // POSITION (item_idx) — the n-th taskItem — never by text, so duplicate task
+  // text can't cross-toggle. State round-trips through the normal save path
+  // (re-fetch /raw for a fresh ETag, flip the n-th item, POST If-Match), which
+  // re-indexes the open-tasks view for free.
+  function attachTaskListeners(root) {
+    const items = root.querySelectorAll('li[data-type="taskItem"]');
+    items.forEach((li, idx) => {
+      let box = li.querySelector('input[type="checkbox"]');
+      if (!box) {
+        // Note authored without the input wrapper — inject a minimal one.
+        box = document.createElement('input');
+        box.type = 'checkbox';
+        const label = document.createElement('label');
+        label.appendChild(box);
+        li.insertBefore(label, li.firstChild);
+      }
+      box.checked = li.getAttribute('data-checked') === 'true';
+      box.disabled = false;
+      box.style.cursor = 'pointer';
+      box.addEventListener('change', () => {
+        const want = box.checked;
+        li.setAttribute('data-checked', want ? 'true' : 'false');
+        persistTaskToggle(idx, want, box);
+      });
+    });
+  }
+
+  async function persistTaskToggle(idx, checked, box) {
+    if (!path) return;
+    setStatus('', 'saving task…');
+    try {
+      const res = await fetch('/raw/' + path);
+      if (!res.ok) throw new Error('raw');
+      const tag = res.headers.get('ETag');
+      const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      const items = doc.querySelectorAll('li[data-type="taskItem"]');
+      if (idx >= items.length) { // structure drifted under us — resync
+        setStatus('offline', 'task moved — reloading');
+        location.reload();
+        return;
+      }
+      items[idx].setAttribute('data-checked', checked ? 'true' : 'false');
+      // Keep TipTap's embedded <input checked> in sync so the editor agrees.
+      const inp = items[idx].querySelector('input[type="checkbox"]');
+      if (inp) {
+        if (checked) inp.setAttribute('checked', 'checked');
+        else inp.removeAttribute('checked');
+      }
+      const body = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+      const headers = { 'Content-Type': 'text/html' };
+      if (tag) headers['If-Match'] = tag;
+      const save = await fetch('/api/note/' + path, { method: 'POST', headers, body });
+      if (save.status === 412 || save.status === 409) {
+        setStatus('offline', 'changed elsewhere — reloading');
+        location.reload();
+        return;
+      }
+      if (!save.ok) throw new Error('save');
+      setStatus('', 'read-only');
+    } catch (e) {
+      box.checked = !checked; // revert the optimistic toggle
+      setStatus('offline', 'task save failed');
+    }
   }
 
   async function load() {

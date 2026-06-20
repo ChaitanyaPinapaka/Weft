@@ -170,6 +170,18 @@ header .status.offline { color: #c0392b; }
 .prose ul, .prose ol { padding-left: 1.4em; margin-bottom: 0.9em; }
 .prose img { max-width: 100%; height: auto; }
 
+/* Task lists: TipTap renders <ul data-type="taskList"> with each item a
+   <li data-type="taskItem"> wrapping <label><input type=checkbox> + a <div>.
+   Lay them out as a clean live checkbox + text row; checked items strike through
+   and mute so the open ones stand out. The viewer wires the checkbox. */
+.prose ul[data-type="taskList"] { list-style: none; padding-left: 2px; }
+.prose li[data-type="taskItem"] { display: flex; align-items: flex-start; gap: 8px; }
+.prose li[data-type="taskItem"] > label { flex: 0 0 auto; margin-top: 4px; }
+.prose li[data-type="taskItem"] input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
+.prose li[data-type="taskItem"] > div { flex: 1 1 auto; min-width: 0; }
+.prose li[data-type="taskItem"] > div > p { margin-bottom: 0; }
+.prose li[data-type="taskItem"][data-checked="true"] > div { color: var(--muted); text-decoration: line-through; }
+
 .brain {
   font-size: 0.88rem;
   /* Flex children default to min-width:auto, which lets them grow past their
