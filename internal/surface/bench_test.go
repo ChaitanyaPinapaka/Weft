@@ -49,7 +49,7 @@ func BenchmarkRank1000(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Rank(focus, sources, candidates, now.Unix(), p, noiser)
+		_ = Rank(focus, sources, candidates, now.Unix(), p, noiser, nil)
 	}
 	b.StopTimer()
 

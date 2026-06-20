@@ -269,7 +269,7 @@ func buildSurface(v *vault.Vault, ix *index.Index, cur string, now time.Time) (*
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Path < cands[j].Path })
 
-	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, now.Unix(), p, surface.NewNoiser(0, 0, false))
+	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, now.Unix(), p, surface.NewNoiser(0, 0, false), nil)
 	if len(scored) > p.TopN {
 		scored = scored[:p.TopN]
 	}

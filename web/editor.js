@@ -920,6 +920,24 @@ function scoresLine(it) {
   return 'act ' + act + ' · base ' + signed(it.Base) + ' · spread ' + signed(it.Spread);
 }
 
+// Reinforcement: following a surfaced suggestion strengthens that association
+// edge (focus → clicked). sendBeacon so it survives the navigation the click
+// triggers; failures are silently ignored.
+function recordSurfaceClick(toPath) {
+  if (!path || !toPath || toPath === path) return;
+  try {
+    const payload = JSON.stringify({ from: path, to: toPath });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/surface/click', new Blob([payload], { type: 'application/json' }));
+    } else {
+      fetch('/api/surface/click', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: payload, keepalive: true,
+      });
+    }
+  } catch (e) { /* best effort */ }
+}
+
 // Dissolving card: only render notes the current context actually activates,
 // i.e. Spread > 0 (a backlink / semantic / co-access edge fired). Base-level-
 // only notes are "recently opened" filing, not recall, so they stay in the
@@ -942,6 +960,7 @@ function renderSurfaced(items) {
 
     const a = document.createElement('a');
     a.href = '?path=' + encodeURIComponent(it.Path);
+    a.addEventListener('click', () => recordSurfaceClick(it.Path));
     // Temperature by position: top item full strength, lower items dimmed
     // toward --muted. Order already encodes rank; opacity reinforces it quietly.
     a.style.opacity = tempOpacity(i / denom);

@@ -277,7 +277,7 @@ func Surface(v *vault.Vault, ix *index.Index, p surface.Params, cur string, now 
 
 	// (f) Rank by activation.
 	noiser := surface.NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian)
-	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser)
+	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser, nil)
 	if len(scored) > p.TopN {
 		scored = scored[:p.TopN]
 	}

@@ -488,6 +488,31 @@ func TestSaveReindexesTasks(t *testing.T) {
 	}
 }
 
+// TestSurfaceClickRecording: a valid brain-panel click strengthens the learned
+// edge; self-clicks and missing endpoints are rejected.
+func TestSurfaceClickRecording(t *testing.T) {
+	_, ix := surfaceFixture(t)
+	h := surfaceClickHandler(ix)
+	post := func(payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/surface/click", strings.NewReader(payload))
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+	if rr := post(`{"from":"focus.html","to":"orphan.html"}`); rr.Code != http.StatusNoContent {
+		t.Fatalf("click: want 204, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if w := ix.GetLearnedWeight("focus.html", "orphan.html"); w <= 1.0 {
+		t.Fatalf("click should strengthen edge, weight=%v", w)
+	}
+	if rr := post(`{"from":"a.html","to":"a.html"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("self-click: want 400, got %d", rr.Code)
+	}
+	if rr := post(`{"from":"a.html"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing to: want 400, got %d", rr.Code)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {

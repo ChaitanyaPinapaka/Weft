@@ -173,7 +173,16 @@ func SeedMtime(accesses []int64, mtime time.Time, p Params) []int64 {
 //
 // Self-edges (src.Path == c.Path) are skipped: a session source that is also a
 // candidate has cosine 1.0 to itself and would fabricate a +WSemantic boost.
-func Spread(c Candidate, sources []Source, p Params) (float64, []string) {
+//
+// learned(src, dst) is the reinforcement multiplier for the src→candidate
+// association (clicking a surfaced note strengthens its edge; a dormant edge
+// decays back to 1.0). It scales the whole per-source contribution — both the
+// backlink/co-access term and the semantic term — so a learned edge surfaces
+// across every signal that links the pair. nil means neutral (1.0 everywhere).
+func Spread(c Candidate, sources []Source, p Params, learned func(src, dst string) float64) (float64, []string) {
+	if learned == nil {
+		learned = neutralLearned
+	}
 	var total, bestSem float64
 	var firedBack, firedCo, firedSem bool
 	for _, src := range sources {
@@ -184,6 +193,7 @@ func Spread(c Candidate, sources []Source, p Params) (float64, []string) {
 		if !ok {
 			continue
 		}
+		lw := learned(src.Path, c.Path)
 		var s float64
 		if e.Backlink {
 			s += p.WBacklink
@@ -197,9 +207,9 @@ func Spread(c Candidate, sources []Source, p Params) (float64, []string) {
 			s += p.WCoAccess * co
 			firedCo = true
 		}
-		total += src.Weight * s
+		total += src.Weight * s * lw
 		if e.Similarity >= p.SemThreshold {
-			if cand := src.Weight * p.WSemantic * e.Similarity; cand > bestSem {
+			if cand := src.Weight * p.WSemantic * e.Similarity * lw; cand > bestSem {
 				bestSem = cand
 				firedSem = true
 			}
@@ -247,11 +257,16 @@ func AttentionWeights(sources []Source, nowUnix int64, lastTouch map[string]int6
 	return out
 }
 
+// neutralLearned is the no-op reinforcement getter (every edge weighted 1.0),
+// used when learning is disabled or unavailable (mobile/CLI/MCP, tests).
+func neutralLearned(string, string) float64 { return 1.0 }
+
 // Rank computes activation for every candidate and returns them sorted desc.
 // sources[0] must be the focus (weight already set via AttentionWeights). The
 // focus is excluded from results. The caller slices to TopN. For reproducible
 // noise the caller must pass candidates in a stable (path-sorted) order.
-func Rank(focus Candidate, sources []Source, candidates []Candidate, nowUnix int64, p Params, n Noiser) []Scored {
+// learned is the reinforcement multiplier (see Spread); nil = neutral.
+func Rank(focus Candidate, sources []Source, candidates []Candidate, nowUnix int64, p Params, n Noiser, learned func(src, dst string) float64) []Scored {
 	out := make([]Scored, 0, len(candidates))
 	for _, c := range candidates {
 		if c.Path == focus.Path {
@@ -259,7 +274,7 @@ func Rank(focus Candidate, sources []Source, candidates []Candidate, nowUnix int
 		}
 		acc := SeedMtime(c.Accesses, c.ModTime, p)
 		base := BaseLevel(acc, nowUnix, p)
-		raw, reasons := Spread(c, sources, p)
+		raw, reasons := Spread(c, sources, p, learned)
 		spread := p.SpreadScale * raw
 		act := base + spread + n.Noise(c.Path)
 
@@ -283,7 +298,7 @@ func Rank(focus Candidate, sources []Source, candidates []Candidate, nowUnix int
 // production Noiser. Callers wanting determinism use Rank with NewNoiser(0,…).
 func RankDefault(focus Candidate, sources []Source, candidates []Candidate, now time.Time) []Scored {
 	p := DefaultParams()
-	return Rank(focus, sources, candidates, now.Unix(), p, NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian))
+	return Rank(focus, sources, candidates, now.Unix(), p, NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian), nil)
 }
 
 // OnThisDay returns candidates whose ModTime falls within ±p.OnThisDayWindowDays

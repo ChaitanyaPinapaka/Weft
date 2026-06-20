@@ -80,7 +80,7 @@ func TestSpreadBacklinkAndCoAccess(t *testing.T) {
 	c := Candidate{Path: "c.html", Edges: map[string]EdgeSet{
 		"focus.html": {Backlink: true, CoAccessCount: 9},
 	}}
-	raw, reasons := Spread(c, src, p)
+	raw, reasons := Spread(c, src, p, nil)
 	wantCo := p.WCoAccess * math.Log1p(9) / math.Log1p(p.CoSaturation)
 	want := p.WBacklink + wantCo
 	if math.Abs(raw-want) > 1e-9 {
@@ -99,7 +99,7 @@ func TestSpreadSemanticThresholdAndMax(t *testing.T) {
 		"a.html": {Similarity: 0.40},
 		"b.html": {Similarity: 0.90},
 	}}
-	raw, reasons := Spread(c, src, p)
+	raw, reasons := Spread(c, src, p, nil)
 	want := p.WSemantic * 0.90
 	if math.Abs(raw-want) > 1e-9 {
 		t.Fatalf("semantic max-over-sources want %v, got %v", want, raw)
@@ -109,7 +109,7 @@ func TestSpreadSemanticThresholdAndMax(t *testing.T) {
 	}
 	// All below threshold → no semantic.
 	c2 := Candidate{Path: "c.html", Edges: map[string]EdgeSet{"a.html": {Similarity: 0.40}}}
-	if raw2, r2 := Spread(c2, src, p); raw2 != 0 || hasReason(r2, "semantic") {
+	if raw2, r2 := Spread(c2, src, p, nil); raw2 != 0 || hasReason(r2, "semantic") {
 		t.Fatalf("sub-threshold cosine must not fire: raw=%v reasons=%v", raw2, r2)
 	}
 }
@@ -123,9 +123,53 @@ func TestSpreadSkipsSelfEdge(t *testing.T) {
 	c := Candidate{Path: "self.html", Edges: map[string]EdgeSet{
 		"self.html": {Similarity: 1.0, Backlink: true, CoAccessCount: 5},
 	}}
-	raw, reasons := Spread(c, src, p)
+	raw, reasons := Spread(c, src, p, nil)
 	if raw != 0 || len(reasons) != 0 {
 		t.Fatalf("self-edge must be skipped entirely, got raw=%v reasons=%v", raw, reasons)
+	}
+}
+
+// TestSpreadWithLearnedWeights: a reinforced edge (learned weight > 1) scales the
+// whole per-source association up; nil getter leaves the baseline untouched.
+func TestSpreadWithLearnedWeights(t *testing.T) {
+	p := DefaultParams()
+	src := []Source{{Path: "focus.html", Weight: 1.0}}
+	c := Candidate{Path: "c.html", Edges: map[string]EdgeSet{
+		"focus.html": {Backlink: true, Similarity: 0.90},
+	}}
+	base, _ := Spread(c, src, p, nil)
+	boosted, _ := Spread(c, src, p, func(s, d string) float64 {
+		if s == "focus.html" && d == "c.html" {
+			return 2.0
+		}
+		return 1.0
+	})
+	if math.Abs(boosted-2.0*base) > 1e-9 {
+		t.Fatalf("learned weight 2.0 should double the spread: base=%v boosted=%v", base, boosted)
+	}
+	// An unrelated edge weight must not affect this pair.
+	other, _ := Spread(c, src, p, func(s, d string) float64 {
+		if s == "x" {
+			return 2.0
+		}
+		return 1.0
+	})
+	if math.Abs(other-base) > 1e-9 {
+		t.Fatalf("unrelated learned edge changed spread: base=%v other=%v", base, other)
+	}
+}
+
+// TestSpreadNilGetter: a nil learned getter behaves exactly as neutral (1.0).
+func TestSpreadNilGetter(t *testing.T) {
+	p := DefaultParams()
+	src := []Source{{Path: "focus.html", Weight: 1.0}}
+	c := Candidate{Path: "c.html", Edges: map[string]EdgeSet{
+		"focus.html": {Backlink: true, CoAccessCount: 3},
+	}}
+	a, _ := Spread(c, src, p, nil)
+	b, _ := Spread(c, src, p, func(string, string) float64 { return 1.0 })
+	if a != b {
+		t.Fatalf("nil getter must equal neutral 1.0: nil=%v neutral=%v", a, b)
 	}
 }
 
@@ -200,7 +244,7 @@ func TestRankAssociationOvercomesRecency(t *testing.T) {
 	}
 	sources := []Source{{Path: "focus.html", Weight: 1.0}}
 	scored := Rank(Candidate{Path: "focus.html"}, sources,
-		[]Candidate{recentNoEdge, backlinked}, now, p, zeroNoise())
+		[]Candidate{recentNoEdge, backlinked}, now, p, zeroNoise(), nil)
 
 	if len(scored) != 2 || scored[0].Path != "old-but-linked.html" {
 		t.Fatalf("association must overcome a months-vs-days recency gap; got order %v",
@@ -216,7 +260,7 @@ func TestRankExcludesFocusAndSortsDesc(t *testing.T) {
 		{Path: "a.html", Accesses: []int64{now - day}},
 		{Path: "b.html", Accesses: []int64{now - 30*day}},
 	}
-	scored := Rank(Candidate{Path: "focus.html"}, []Source{{Path: "focus.html", Weight: 1}}, cands, now, p, zeroNoise())
+	scored := Rank(Candidate{Path: "focus.html"}, []Source{{Path: "focus.html", Weight: 1}}, cands, now, p, zeroNoise(), nil)
 	for _, s := range scored {
 		if s.Path == "focus.html" {
 			t.Fatal("focus must be excluded")
@@ -239,7 +283,7 @@ func TestRankResurfacedReason(t *testing.T) {
 		Edges:    map[string]EdgeSet{"focus.html": {Backlink: true, Similarity: 0.9}},
 	}
 	scored := Rank(Candidate{Path: "focus.html"},
-		[]Source{{Path: "focus.html", Weight: 1}}, []Candidate{cold}, now, p, zeroNoise())
+		[]Source{{Path: "focus.html", Weight: 1}}, []Candidate{cold}, now, p, zeroNoise(), nil)
 	if len(scored) != 1 || !hasReason(scored[0].Reasons, "resurfaced") {
 		t.Fatalf("forgotten-but-associated note should be resurfaced: %v", scored)
 	}

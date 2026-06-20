@@ -98,6 +98,7 @@ func Run(vaultPath string) error {
 	// literal "stream" here instead of treating it as a note path.
 	mux.HandleFunc("GET /api/surface/stream", surfaceStreamHandler(hub))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
+	mux.HandleFunc("POST /api/surface/click", surfaceClickHandler(ix))
 	// Short-lived trash tombstones block a queued save from resurrecting a note
 	// the user just removed (shared by save + trash).
 	tomb := newTrashTombstones()
@@ -780,6 +781,31 @@ func searchHandler(ix *index.Index) http.HandlerFunc {
 // notes touched earlier this session), over backlink/semantic/co-access edges.
 // Also returns the explicit backlinks list, the on_this_day anniversary array,
 // and the session "trail" (focus → earlier sources) for the thought-trail UI.
+// surfaceClickHandler records that the user followed a surfaced suggestion from
+// `from` to `to`, strengthening that learned association edge (the reinforcement
+// loop). Fire-and-forget from the client (a sendBeacon during navigation), so a
+// best-effort record never blocks the click: we 204 even if the write hiccups.
+func surfaceClickHandler(ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if body.From == "" || body.To == "" || body.From == body.To {
+			http.Error(w, "from and to required and distinct", http.StatusBadRequest)
+			return
+		}
+		if err := ix.RecordEdgeClick(body.From, body.To, time.Now().Unix()); err != nil {
+			fmt.Printf("surface click %s→%s: %v\n", body.From, body.To, err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func surfaceHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, ps *paramStore) http.HandlerFunc {
 	// emb is unused: surfacing reads the embeddings stored in the index, not the
 	// live embedder. Kept in the signature for call-site/test symmetry with the
@@ -923,7 +949,7 @@ func computeSurface(v *vault.Vault, ix *index.Index, p surface.Params, cur strin
 
 	// (f) Rank by activation.
 	noiser := surface.NewNoiser(p.NoiseScale, now.UnixNano(), p.Gaussian)
-	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser)
+	scored := surface.Rank(surface.Candidate{Path: cur}, sources, cands, nowUnix, p, noiser, ix.GetLearnedWeight)
 	if len(scored) > p.TopN {
 		scored = scored[:p.TopN]
 	}

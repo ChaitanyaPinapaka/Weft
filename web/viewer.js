@@ -340,6 +340,24 @@
   // i.e. Spread > 0 (a backlink / semantic / co-access edge fired). Base-level-
   // only notes are "recently opened" filing, not recall, so they stay in the
   // quiet margin. If nothing crosses the threshold, the whole section is hidden.
+  // Reinforcement: following a surfaced suggestion strengthens that association
+  // edge (focus → clicked). Fire-and-forget via sendBeacon so it survives the
+  // navigation the same click triggers; failures are silently ignored.
+  function recordSurfaceClick(toPath) {
+    if (!path || !toPath || toPath === path) return;
+    try {
+      const payload = JSON.stringify({ from: path, to: toPath });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/surface/click', new Blob([payload], { type: 'application/json' }));
+      } else {
+        fetch('/api/surface/click', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: payload, keepalive: true,
+        });
+      }
+    } catch (e) { /* best effort */ }
+  }
+
   function renderSurfaced(items) {
     surfacedEl.innerHTML = '';
     const activated = (items || []).filter(it => (it.Spread || 0) > 0);
@@ -358,6 +376,7 @@
 
       const a = document.createElement('a');
       a.href = '/note/' + it.Path;
+      a.addEventListener('click', () => recordSurfaceClick(it.Path));
       // Temperature by position: top item full strength, lower items dimmed
       // toward --muted. Order encodes rank; opacity reinforces it quietly.
       a.style.opacity = tempOpacity(i / denom);
