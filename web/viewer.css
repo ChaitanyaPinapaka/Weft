@@ -182,6 +182,25 @@ header .status.offline { color: #c0392b; }
 .prose li[data-type="taskItem"] > div > p { margin-bottom: 0; }
 .prose li[data-type="taskItem"][data-checked="true"] > div { color: var(--muted); text-decoration: line-through; }
 
+/* Brain-panel hover preview: a floating glance card (title + snippet) shown on
+   hovering a backlink/surfaced item. pointer-events:none so it never steals the
+   hover that spawned it; positioned in JS. */
+.brain-preview {
+  position: fixed;
+  z-index: 50;
+  width: 280px;
+  max-width: 80vw;
+  background: var(--surface, #1a1a1a);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  font-size: 0.85rem;
+}
+.brain-preview-title { font-weight: 600; margin-bottom: 4px; }
+.brain-preview-body { color: var(--muted); line-height: 1.45; }
+
 .brain {
   font-size: 0.88rem;
   /* Flex children default to min-width:auto, which lets them grow past their

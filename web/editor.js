@@ -1090,3 +1090,87 @@ function subscribeChanges() {
   });
 }
 subscribeChanges();
+
+// Brain-panel hover previews: hovering a backlink / surfaced / on-this-day item
+// shows a floating card with the note's title + first ~160 chars, so you can
+// glance a connection without leaving what you're writing. Fetches /raw
+// (cached), debounced; the card is pointer-events:none so it never steals hover.
+(function attachBrainPreviews() {
+  if (!brainEl) return;
+  const HOVER_DELAY = 180, MAX_CHARS = 160;
+  const cache = new Map();
+  let card = null, showTimer = null, activeAnchor = null;
+
+  function notePathFromHref(href) {
+    if (!href) return '';
+    let m = href.match(/[?&]path=([^&#]+)/);   // editor links
+    if (m) return decodeURIComponent(m[1]);
+    m = href.match(/\/note\/([^?#]+)/);         // backlink links
+    if (m) return decodeURIComponent(m[1]);
+    return '';
+  }
+  function ensureCard() {
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'brain-preview';
+      card.hidden = true;
+      document.body.appendChild(card);
+    }
+    return card;
+  }
+  async function fetchPreview(p) {
+    if (cache.has(p)) return cache.get(p);
+    const res = await fetch('/raw/' + p);
+    if (!res.ok) throw new Error('raw');
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    const root = doc.querySelector('article') || doc.body;
+    const h1 = root.querySelector('h1');
+    const title = (h1 && h1.textContent.trim()) || doc.title || titleFromPath(p);
+    if (h1) h1.remove();
+    const text = (root.textContent || '').replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS);
+    const data = { title, text };
+    cache.set(p, data);
+    return data;
+  }
+  function show(anchor, data) {
+    const c = ensureCard();
+    c.innerHTML = '';
+    const t = document.createElement('div');
+    t.className = 'brain-preview-title';
+    t.textContent = data.title;
+    const b = document.createElement('div');
+    b.className = 'brain-preview-body';
+    b.textContent = data.text || '(empty note)';
+    c.appendChild(t);
+    c.appendChild(b);
+    c.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    const w = c.offsetWidth || 280;
+    let left = r.left - w - 12;
+    if (left < 8) left = Math.min(r.left, window.innerWidth - w - 8);
+    c.style.left = left + 'px';
+    c.style.top = Math.max(8, Math.min(r.top, window.innerHeight - c.offsetHeight - 8)) + 'px';
+  }
+  function hide() {
+    clearTimeout(showTimer);
+    activeAnchor = null;
+    if (card) card.hidden = true;
+  }
+  brainEl.addEventListener('mouseover', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || !brainEl.contains(a)) return;
+    const p = notePathFromHref(a.getAttribute('href'));
+    if (!p || p === path) return;
+    activeAnchor = a;
+    clearTimeout(showTimer);
+    showTimer = setTimeout(async () => {
+      try {
+        const data = await fetchPreview(p);
+        if (activeAnchor === a) show(a, data);
+      } catch (e) { /* ignore */ }
+    }, HOVER_DELAY);
+  });
+  brainEl.addEventListener('mouseout', hide);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  window.addEventListener('scroll', hide, true);
+})();
