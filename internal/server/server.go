@@ -91,6 +91,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /notes", listHandler(v))
 	mux.HandleFunc("GET /note/{path...}", noteHandler(v, ix))
 	mux.HandleFunc("GET /raw/{path...}", rawHandler(v))
+	mux.HandleFunc("GET /api/note-runnable/{path...}", runnableNoteHandler(v))
 	mux.HandleFunc("GET /edit/{path...}", editRedirectHandler())
 	mux.HandleFunc("GET /daily", dailyRedirectHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
@@ -337,6 +338,102 @@ func rawHandler(v *vault.Vault) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(content)
 	}
+}
+
+// runnableNoteHandler serves a SELF-AUTHORED note's raw HTML — scripts intact —
+// for the viewer to load inside a sandboxed iframe. It refuses any note not
+// explicitly opted in via <meta name="weft-runnable" content="true"> (403). The
+// real isolation boundary is the iframe (sandbox="allow-scripts" WITHOUT
+// allow-same-origin → a null origin that can't reach the daemon's pages, cookies
+// or storage); the strict CSP set here is defence in depth so even a trusted
+// artifact can't phone home (connect-src 'none') or pull external resources. We
+// also strip frame/object/embed/base as belt-and-suspenders — none belong in a
+// self-contained artifact — while keeping <script> (the whole point) and forms
+// (CSP form-action 'none' neutralizes them).
+func runnableNoteHandler(v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("path")
+		if !strings.HasSuffix(rel, ".html") {
+			rel += ".html"
+		}
+		content, err := v.Read(rel)
+		if err != nil {
+			http.Error(w, "note not found", http.StatusNotFound)
+			return
+		}
+		if !hasRunnableMeta(content) {
+			http.Error(w, "note is not marked runnable", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; "+
+				"style-src 'unsafe-inline'; img-src data: blob:; font-src data:; "+
+				"media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Write(sanitizeRunnable(content))
+	}
+}
+
+// hasRunnableMeta reports whether the note opted into running its own JS via
+// <meta name="weft-runnable" content="true"> anywhere in the document.
+func hasRunnableMeta(content []byte) bool {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return false
+	}
+	found := false
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if found {
+			return
+		}
+		if n.Type == gohtml.ElementNode && n.Data == "meta" &&
+			strings.EqualFold(attrVal(n, "name"), "weft-runnable") &&
+			strings.EqualFold(attrVal(n, "content"), "true") {
+			found = true
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return found
+}
+
+// sanitizeRunnable strips frame/object/embed/base elements from a runnable note
+// (defence in depth on top of the sandbox + CSP) while KEEPING scripts, inline
+// handlers, styles and forms — what an interactive artifact actually needs.
+func sanitizeRunnable(content []byte) []byte {
+	doc, err := gohtml.Parse(bytes.NewReader(content))
+	if err != nil {
+		return content
+	}
+	var drop []*gohtml.Node
+	var walk func(n *gohtml.Node)
+	walk = func(n *gohtml.Node) {
+		if n.Type == gohtml.ElementNode {
+			switch n.Data {
+			case "iframe", "object", "embed", "base":
+				drop = append(drop, n)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	for _, n := range drop {
+		if n.Parent != nil {
+			n.Parent.RemoveChild(n)
+		}
+	}
+	var buf bytes.Buffer
+	if err := gohtml.Render(&buf, doc); err != nil {
+		return content
+	}
+	return buf.Bytes()
 }
 
 // editRedirectHandler hands /edit/{path} → the editor surface. Doesn't touch

@@ -513,6 +513,58 @@ func TestSurfaceClickRecording(t *testing.T) {
 	}
 }
 
+// TestRunnableNoteHandler: only meta-flagged notes serve runnable (scripts kept,
+// CSP set); others 403. Defense-in-depth strips nested frames but keeps scripts.
+func TestRunnableNoteHandler(t *testing.T) {
+	v, err := vault.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, body string) {
+		if err := v.Write(rel, []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app.html", `<!DOCTYPE html><html><head><meta name="weft-runnable" content="true"><title>App</title></head>`+
+		`<body><article><h1>App</h1><script>window.x=1</script>`+
+		`<iframe src="https://evil.example"></iframe><form><input></form></article></body></html>`)
+	write("plain.html", `<article><h1>Plain</h1><p>hi</p></article>`)
+
+	h := runnableNoteHandler(v)
+	call := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/note-runnable/"+path, nil)
+		req.SetPathValue("path", path)
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+
+	rr := call("app.html")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("runnable: want 200, got %d", rr.Code)
+	}
+	if rr.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("runnable response must set a CSP")
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "window.x=1") {
+		t.Fatal("script must be kept for a runnable note")
+	}
+	if strings.Contains(body, "<iframe") {
+		t.Fatal("nested iframe must be stripped (defense in depth)")
+	}
+	if !strings.Contains(body, "<form") {
+		t.Fatal("form should be kept (sandbox + CSP neutralize it)")
+	}
+
+	if rr := call("plain.html"); rr.Code != http.StatusForbidden {
+		t.Fatalf("non-runnable note: want 403, got %d", rr.Code)
+	}
+	if rr := call("nope.html"); rr.Code != http.StatusNotFound {
+		t.Fatalf("missing note: want 404, got %d", rr.Code)
+	}
+}
+
 // TestTrashTombstoneBlocksResurrection: a save to a just-trashed path must 409
 // (R5) so a queued autosave/beacon can't recreate a removed note.
 func TestTrashTombstoneBlocksResurrection(t *testing.T) {

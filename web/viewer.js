@@ -138,8 +138,34 @@
     }
   }
 
+  // Render a runnable artifact in a sandboxed iframe. allow-scripts WITHOUT
+  // allow-same-origin gives the frame a null origin: its JS runs but can't reach
+  // this page, our cookies, or storage. The note is served from
+  // /api/note-runnable with a strict CSP (no network, no externals) as defence
+  // in depth. The body is NOT inlined — only the title is lifted into the chrome.
+  function renderRunnable(doc) {
+    const h1 = doc.querySelector('h1');
+    const t = (h1 && h1.textContent.trim()) || doc.title || titleFromPath(path);
+    titleEl.textContent = t;
+    document.title = 'Weft — ' + t;
+    proseEl.innerHTML = '';
+    const frame = document.createElement('iframe');
+    frame.className = 'runnable-frame';
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.setAttribute('title', t);
+    frame.src = '/api/note-runnable/' + path;
+    proseEl.appendChild(frame);
+  }
+
   function hydrate(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Runnable artifact: a self-authored note that opts into executing its own
+    // JS. Render it sandboxed instead of inlining (which would strip scripts).
+    const runnable = doc.querySelector('meta[name="weft-runnable"]');
+    if (runnable && (runnable.getAttribute('content') || '').toLowerCase() === 'true') {
+      renderRunnable(doc);
+      return;
+    }
     const article = doc.querySelector('article');
     const root = article || doc.body;
     sanitize(root);

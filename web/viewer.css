@@ -201,6 +201,20 @@ header .status.offline { color: #c0392b; }
 .brain-preview-title { font-weight: 600; margin-bottom: 4px; }
 .brain-preview-body { color: var(--muted); line-height: 1.45; }
 
+/* Runnable artifact: a self-authored note that executes its own JS, hosted in a
+   sandboxed (null-origin) iframe. Full-width, generous default height, and
+   user-resizable since we can't auto-size a cross-origin frame to its content. */
+.runnable-frame {
+  width: 100%;
+  height: 80vh;
+  min-height: 360px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: #fff;
+  resize: vertical;
+  overflow: auto;
+}
+
 .brain {
   font-size: 0.88rem;
   /* Flex children default to min-width:auto, which lets them grow past their
