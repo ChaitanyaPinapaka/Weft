@@ -571,7 +571,7 @@ func TestRunnableNoteHandler(t *testing.T) {
 func TestNewNoteHandler(t *testing.T) {
 	v, ix := surfaceFixture(t)
 	st := event.NewStore(v, "test-device")
-	h := newNoteHandler(v, ix, nil, st)
+	h := newNoteHandler(v, ix, nil, st, nil)
 	create := func(query string) (int, string) {
 		req := httptest.NewRequest(http.MethodPost, "/api/note/new?"+query, nil)
 		rr := httptest.NewRecorder()
@@ -623,7 +623,7 @@ func TestCaptureEmitsEvent(t *testing.T) {
 	}
 	defer ix.Close()
 	st := event.NewStore(v, "test-device")
-	h := captureHandler(v, ix, nil, newAmbientHub(), st)
+	h := captureHandler(v, ix, nil, newAmbientHub(), st, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/capture", strings.NewReader(`{"text":"remember the milk"}`))
 	rr := httptest.NewRecorder()

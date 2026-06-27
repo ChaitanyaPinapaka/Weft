@@ -101,6 +101,40 @@ func TestSelectSuggestionEmpty(t *testing.T) {
 	}
 }
 
+// The event-driven push gate is stricter than the periodic nudge: a routine
+// association is pushed by selectSuggestion but withheld by selectHighValue —
+// the anti-fatigue contract (routine associations stay in the pull panel).
+func TestSelectHighValueGatesOutRoutineAssociation(t *testing.T) {
+	res := surfaceResult{
+		Current: "focus.html",
+		Scored:  []surface.Scored{scored("link.html", 2.0, "base", "backlink")},
+	}
+	if ev, ok := selectSuggestion(res, ambientNow, nil); !ok || ev.Path != "link.html" {
+		t.Fatalf("periodic nudge should still push the association, got %+v ok=%v", ev, ok)
+	}
+	if _, ok := selectHighValue(res, ambientNow, nil); ok {
+		t.Fatal("event-driven gate must NOT push a routine association")
+	}
+}
+
+// Only the unambiguous wins clear the event-driven gate.
+func TestSelectHighValuePushesResurfacedAndOnThisDay(t *testing.T) {
+	resurfaced := surfaceResult{
+		Current: "focus.html",
+		Scored:  []surface.Scored{scored("recall.html", 1.2, "semantic", "resurfaced")},
+	}
+	if ev, ok := selectHighValue(resurfaced, ambientNow, nil); !ok || ev.Path != "recall.html" || ev.Reason != "resurfaced" {
+		t.Fatalf("resurfaced must clear the gate, got %+v ok=%v", ev, ok)
+	}
+	onThisDay := surfaceResult{
+		Current:   "focus.html",
+		OnThisDay: []surface.Candidate{{Path: "trip.html", Title: "trip", ModTime: ambientNow.AddDate(-2, 0, 0)}},
+	}
+	if ev, ok := selectHighValue(onThisDay, ambientNow, nil); !ok || ev.Path != "trip.html" || ev.Reason != "on-this-day" {
+		t.Fatalf("on-this-day must clear the gate, got %+v ok=%v", ev, ok)
+	}
+}
+
 func TestAmbientHubBroadcast(t *testing.T) {
 	h := newAmbientHub()
 	ch := h.subscribe()

@@ -82,7 +82,10 @@ func Run(vaultPath string) error {
 	// the hub lets it tell open clients which pulled notes to reload.
 	startAutoSync(v, ix, emb, hub)
 
-	startAmbientSurfacer(hub, v, ix, ps)
+	// The proactive push surface: a calm periodic nudge plus an event-driven
+	// push fired the moment new context lands (see recordEvent → pushFromEvent).
+	surf := newAmbientSurfacer(hub, v, ix, ps)
+	surf.start()
 	startLearnedEdgeDecayer(ix)
 
 	// Capture substrate: the append-only event log + content-addressed blob store
@@ -117,7 +120,7 @@ func Run(vaultPath string) error {
 	// Short-lived trash tombstones block a queued save from resurrecting a note
 	// the user just removed (shared by save + trash).
 	tomb := newTrashTombstones()
-	mux.HandleFunc("POST /api/note/new", newNoteHandler(v, ix, emb, evStore))
+	mux.HandleFunc("POST /api/note/new", newNoteHandler(v, ix, emb, evStore, surf))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb, tomb))
 	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix, tomb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb, hub))
@@ -125,8 +128,8 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.HandleFunc("GET /api/tasks", tasksHandler(ix))
-	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb, evStore))
-	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub, evStore))
+	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb, evStore, surf))
+	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub, evStore, surf))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
 	mux.HandleFunc("GET /api/params", getParamsHandler(ps))
@@ -538,7 +541,7 @@ func tasksHandler(ix *index.Index) http.HandlerFunc {
 // newNoteHandler creates a note from a title (slugified to {slug}.html at the
 // vault root, collision-suffixed so it never overwrites) and returns {path}.
 // Powers the command palette's quick-create; the title becomes the note's <h1>.
-func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store) http.HandlerFunc {
+func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store, surf *ambientSurfacer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		title := strings.TrimSpace(r.URL.Query().Get("title"))
 		if title == "" {
@@ -565,7 +568,7 @@ func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore
 		updateEmbedding(ix, emb, rel, t+"\n"+b)
 		// Creating a note silently becomes a graph Document, behind the scenes.
 		if payload, err := json.Marshal(map[string]string{"title": title, "path": rel}); err == nil {
-			recordEvent(evStore, ix, event.Envelope{Source: "note", Kind: "note.created"}, payload)
+			recordEvent(evStore, ix, surf, event.Envelope{Source: "note", Kind: "note.created"}, payload, rel)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
@@ -637,7 +640,7 @@ func ingestHandler(st *event.Store) http.HandlerFunc {
 // nil-safe — a save/capture/clip is never blocked or failed by lake bookkeeping;
 // failures are logged and heal on the next catch-up. This is how saving anything
 // to Weft silently becomes graph.
-func recordEvent(evStore *event.Store, ix *index.Index, env event.Envelope, payload []byte) {
+func recordEvent(evStore *event.Store, ix *index.Index, surf *ambientSurfacer, env event.Envelope, payload []byte, focus string) {
 	if evStore == nil {
 		return
 	}
@@ -648,6 +651,9 @@ func recordEvent(evStore *event.Store, ix *index.Index, env event.Envelope, payl
 	if _, err := derive.Catchup(evStore, ix); err != nil {
 		fmt.Printf("event: derive after %s: %v\n", env.Kind, err)
 	}
+	// Event-driven push: the new context may be worth a proactive nudge. Gated
+	// (resurfaced/on-this-day only) and nil-safe, so it's a no-op when quiet.
+	surf.pushFromEvent(focus)
 }
 
 // deviceID names this device on captured events. Hostname is a stable, adequate
@@ -679,7 +685,7 @@ func tagHandler(ix *index.Index) http.HandlerFunc {
 // clipHandler accepts `POST /api/clip` with `{url, html, title}` (title is
 // optional and used as a slug hint; clip.Clean derives one if absent).
 // Browser extension is the primary caller.
-func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store) http.HandlerFunc {
+func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store, surf *ambientSurfacer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			URL   string `json:"url"`
@@ -722,7 +728,7 @@ func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *e
 		updateEmbedding(ix, emb, rel, t+"\n"+txt)
 		// Saving a clip silently becomes a graph Document, behind the scenes.
 		if payload, err := json.Marshal(map[string]string{"url": body.URL, "title": t, "path": rel}); err == nil {
-			recordEvent(evStore, ix, event.Envelope{Source: "clip", Kind: "clip.created"}, payload)
+			recordEvent(evStore, ix, surf, event.Envelope{Source: "clip", Kind: "clip.created"}, payload, rel)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
@@ -770,7 +776,7 @@ func graphRedirectHandler() http.HandlerFunc {
 
 // captureHandler accepts `POST /api/capture` with `{text}` and appends to
 // today's daily note (creating it if missing). Same engine as `weft capture`.
-func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub, evStore *event.Store) http.HandlerFunc {
+func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub, evStore *event.Store, surf *ambientSurfacer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
@@ -817,7 +823,7 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *am
 		// producer. Best-effort: a capture is never blocked by lake bookkeeping.
 		// Payload (text + target note path) is content-addressed.
 		if payload, err := json.Marshal(map[string]string{"text": body.Text, "path": rel}); err == nil {
-			recordEvent(evStore, ix, event.Envelope{Source: "capture", Kind: "capture.created"}, payload)
+			recordEvent(evStore, ix, surf, event.Envelope{Source: "capture", Kind: "capture.created"}, payload, rel)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})

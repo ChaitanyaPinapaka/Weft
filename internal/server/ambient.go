@@ -141,38 +141,82 @@ func writeSSE(w io.Writer, ev surfaceEvent) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
 }
 
-// startAmbientSurfacer runs the proactive-surfacing ticker. It seeds the engine
-// from the most recent access (the note the user is effectively "on"), picks at
-// most one suggestion per tick, suppresses a path it pushed within the last day,
-// and only computes when at least one client is connected. Interval defaults to
-// 30m — a calm ambient nudge, not a feed — overridable via WEFT_SURFACE_INTERVAL
-// (a Go duration, e.g. "1h" or "20s" for demos).
-func startAmbientSurfacer(h *ambientHub, v *vault.Vault, ix *index.Index, ps *paramStore) {
+// ambientSurfacer owns the proactive push surface — the calm periodic nudge
+// (start) AND the event-driven push fired the moment new context lands
+// (pushFromEvent). Both share one suppression map (so a note isn't pushed twice
+// within repeatWindow) and neither does any work when no client is listening.
+type ambientSurfacer struct {
+	hub *ambientHub
+	v   *vault.Vault
+	ix  *index.Index
+	ps  *paramStore
+
+	mu     sync.Mutex
+	recent map[string]int64 // path -> last-pushed unix (shared suppression)
+}
+
+func newAmbientSurfacer(h *ambientHub, v *vault.Vault, ix *index.Index, ps *paramStore) *ambientSurfacer {
+	return &ambientSurfacer{hub: h, v: v, ix: ix, ps: ps, recent: map[string]int64{}}
+}
+
+// start runs the calm periodic nudge: every interval, seed from the most recent
+// access and push at most one suggestion. Default 30m, overridable via
+// WEFT_SURFACE_INTERVAL. Does nothing when nobody is listening.
+func (s *ambientSurfacer) start() {
 	interval := 30 * time.Minute
-	if s := os.Getenv("WEFT_SURFACE_INTERVAL"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+	if v := os.Getenv("WEFT_SURFACE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
 		}
 	}
 	fmt.Printf("Surface  ambient push every %s\n", interval)
-
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		recent := make(map[string]int64) // path -> last-pushed unix
 		for range t.C {
-			if h.count() == 0 {
+			if s.hub.count() == 0 {
 				continue // nobody listening — don't touch the engine
 			}
 			now := time.Now()
-			ev, ok := pickSurfaceEvent(v, ix, ps.get(), now, recent)
-			if !ok {
-				continue
+			s.mu.Lock()
+			ev, ok := pickSurfaceEvent(s.v, s.ix, s.ps.get(), now, s.recent)
+			if ok {
+				s.recent[ev.Path] = now.Unix()
 			}
-			recent[ev.Path] = now.Unix()
-			h.broadcast(ev)
+			s.mu.Unlock()
+			if ok {
+				s.hub.broadcast(ev)
+			}
 		}
 	}()
+}
+
+// pushFromEvent is the event-driven push (the "surface = push notification"
+// model): when new context lands — a capture, clip, or save touching `focus` —
+// seed surfacing from it and push ONLY an unambiguous win (a resurfaced or
+// on-this-day note). Routine live associations are deliberately NOT pushed here:
+// they'd fire on nearly every capture and become notification fatigue, so they
+// stay in the pull brain panel. This conservative heuristic IS the bootstrap
+// confidence gate; the learned RL-confidence policy refines it later. No-op when
+// nobody is listening.
+func (s *ambientSurfacer) pushFromEvent(focus string) {
+	if s == nil || focus == "" || s.hub.count() == 0 {
+		return
+	}
+	now := time.Now()
+	res, err := computeSurface(s.v, s.ix, s.ps.get(), focus, now)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	ev, ok := selectHighValue(res, now, s.recent)
+	if ok {
+		s.recent[ev.Path] = now.Unix()
+	}
+	s.mu.Unlock()
+	if ok {
+		s.hub.broadcast(ev)
+	}
 }
 
 // startLearnedEdgeDecayer periodically resets reinforcement edges not followed
@@ -218,26 +262,25 @@ func pickSurfaceEvent(v *vault.Vault, ix *index.Index, p surface.Params, now tim
 // again — one day, so the same note doesn't nag across a work session.
 const repeatWindow = 24 * 60 * 60
 
-// selectSuggestion is the pure choice: from a computed surface, return the one
-// note most worth pushing. Priority: a resurfaced (forgotten-yet-relevant) note
-// first — that's the magic moment — then an on-this-day anniversary, then the
-// strongest live association. Skips the focus itself and anything pushed within
-// repeatWindow. Pure (no I/O) so it is unit-testable.
-func selectSuggestion(res surfaceResult, now time.Time, recent map[string]int64) (surfaceEvent, bool) {
-	fresh := func(path string) bool {
-		if path == "" || path == res.Current {
-			return false
-		}
-		last, seen := recent[path]
-		return !seen || now.Unix()-last > repeatWindow
+// freshPath reports whether a candidate is worth pushing now: not the focus
+// itself, and not pushed within repeatWindow.
+func freshPath(recent map[string]int64, now time.Time, current, path string) bool {
+	if path == "" || path == current {
+		return false
 	}
+	last, seen := recent[path]
+	return !seen || now.Unix()-last > repeatWindow
+}
 
-	// 1) Resurfaced: a cold-base note pulled up by association.
+// selectHighValue returns the single unambiguous "oh, I forgot about that" win
+// worth interrupting for — a resurfaced (forgotten-yet-relevant) note, else an
+// on-this-day anniversary — or false. This is the conservative gate the
+// event-driven push uses on every capture; routine live associations are
+// deliberately excluded so the push stays rare and meaningful. Pure, testable.
+func selectHighValue(res surfaceResult, now time.Time, recent map[string]int64) (surfaceEvent, bool) {
+	// 1) Resurfaced: a cold-base note pulled up by association — the magic moment.
 	for _, s := range res.Scored {
-		if s.Spread <= 0 || !fresh(s.Path) {
-			continue
-		}
-		if hasReason(s.Reasons, "resurfaced") {
+		if s.Spread > 0 && freshPath(recent, now, res.Current, s.Path) && hasReason(s.Reasons, "resurfaced") {
 			return surfaceEvent{
 				Type: "surface", Path: s.Path, Title: s.Title,
 				Reason: "resurfaced", Detail: fmt.Sprintf("act %.1f", s.Activation),
@@ -245,21 +288,27 @@ func selectSuggestion(res surfaceResult, now time.Time, recent map[string]int64)
 			}, true
 		}
 	}
-
 	// 2) On this day: a calendar anniversary in a prior year.
 	for _, c := range res.OnThisDay {
-		if !fresh(c.Path) {
-			continue
+		if freshPath(recent, now, res.Current, c.Path) {
+			return surfaceEvent{
+				Type: "surface", Path: c.Path, Title: c.Title,
+				Reason: "on-this-day", Detail: yearsAgo(now.Year() - c.ModTime.Year()),
+			}, true
 		}
-		return surfaceEvent{
-			Type: "surface", Path: c.Path, Title: c.Title,
-			Reason: "on-this-day", Detail: yearsAgo(now.Year() - c.ModTime.Year()),
-		}, true
 	}
+	return surfaceEvent{}, false
+}
 
-	// 3) Strongest live association from the current session.
+// selectSuggestion is the periodic-nudge choice: a high-value win first, then —
+// acceptable only on the calm 30m cadence, not on the per-event gate — the
+// strongest live association. Skips the focus and anything within repeatWindow.
+func selectSuggestion(res surfaceResult, now time.Time, recent map[string]int64) (surfaceEvent, bool) {
+	if ev, ok := selectHighValue(res, now, recent); ok {
+		return ev, true
+	}
 	for _, s := range res.Scored {
-		if s.Spread <= 0 || !fresh(s.Path) {
+		if s.Spread <= 0 || !freshPath(recent, now, res.Current, s.Path) {
 			continue
 		}
 		return surfaceEvent{
@@ -268,7 +317,6 @@ func selectSuggestion(res surfaceResult, now time.Time, recent map[string]int64)
 			Activation: s.Activation,
 		}, true
 	}
-
 	return surfaceEvent{}, false
 }
 
