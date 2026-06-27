@@ -112,6 +112,35 @@ func resultErrorMessage(t *testing.T, res *mcplib.CallToolResult) string {
 	return tc.Text
 }
 
+// TestDescribeVault: the capability manifest reports vault stats and advertises
+// the tools (incl. surface_note, the recall tool) so an agent can orient.
+func TestDescribeVault(t *testing.T) {
+	v, ix := fixture(t)
+	s := New(v, ix)
+	res, err := s.handleDescribeVault(context.Background(), callRequest(nil))
+	if err != nil {
+		t.Fatalf("handleDescribeVault: %v", err)
+	}
+	var out struct {
+		Name      string              `json:"name"`
+		NoteCount int                 `json:"note_count"`
+		Tools     []map[string]string `json:"tools"`
+	}
+	decodeResult(t, res, &out)
+	if out.Name != "weft" || out.NoteCount != 3 {
+		t.Fatalf("describe_vault: name=%q note_count=%d (want weft / 3)", out.Name, out.NoteCount)
+	}
+	found := false
+	for _, td := range out.Tools {
+		if td["name"] == "surface_note" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("describe_vault must advertise surface_note")
+	}
+}
+
 // TestSurfaceCandidateBuilding verifies that linked notes (incoming or
 // outgoing) surface with a "backlink" reason from the ACT-R spreading term.
 // This is the slice of surface logic reimplemented in this package — worth a

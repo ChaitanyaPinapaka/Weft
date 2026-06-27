@@ -1,6 +1,7 @@
 // Package mcp exposes the Weft vault to MCP clients (Claude Code, etc.) over
-// stdio. Five tools are registered: list_notes, read_note, write_note,
-// search_notes, surface_note. The transport is JSON-RPC over stdin/stdout —
+// stdio. Six tools are registered: describe_vault (capability discovery),
+// list_notes, read_note, write_note, search_notes, surface_note. The transport
+// is JSON-RPC over stdin/stdout —
 // any stray write to stdout corrupts the protocol, so this package logs only
 // to stderr.
 package mcp
@@ -52,6 +53,16 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) registerTools() {
+	s.mcp.AddTool(
+		mcplib.NewTool("describe_vault",
+			mcplib.WithDescription(
+				"Describe this Weft vault and HOW to consume it: vault stats, the "+
+					"available tools and when to use each, and the surfacing-over-search "+
+					"recall model. Call this first to orient before reading or searching."),
+		),
+		s.handleDescribeVault,
+	)
+
 	s.mcp.AddTool(
 		mcplib.NewTool("list_notes",
 			mcplib.WithDescription(
@@ -121,6 +132,31 @@ func (s *Server) registerTools() {
 }
 
 // --- handlers ---------------------------------------------------------------
+
+// handleDescribeVault is the agent-native capability/discovery manifest — the
+// MCP analog of /llms.txt. It tells a connecting agent what's here and how to
+// consume it, so it can orient before reading or searching.
+func (s *Server) handleDescribeVault(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	notes, _ := s.v.List()
+	return jsonResult(map[string]any{
+		"name":       "weft",
+		"summary":    "A local-first personal-context vault. Recall is surfacing — associative and cue-driven — not just search.",
+		"note_count": len(notes),
+		"tools": []map[string]string{
+			{"name": "list_notes", "use": "enumerate every note (path/title/mtime/size)"},
+			{"name": "read_note", "use": "read a note's full HTML by path"},
+			{"name": "search_notes", "use": "FTS5 full-text search, BM25-ranked"},
+			{"name": "surface_note", "use": "associative recall: backlinks + activation-ranked neighbors for a note; prefer over search for 'what relates to X'"},
+			{"name": "write_note", "use": "create/overwrite a note (HTML); never deletes"},
+		},
+		"model": map[string]string{
+			"recall":    "ACT-R memory activation: base-level recency/frequency decay + spreading activation over backlink and co-access edges",
+			"retention": "notes are never deleted; dormancy lowers ranking, not retention",
+			"format":    "notes are HTML files on disk",
+		},
+		"how_to_consume": "Call describe_vault to orient, list_notes/search_notes to locate, surface_note to expand a note's associative neighborhood, write_note to persist durable findings.",
+	})
+}
 
 func (s *Server) handleListNotes(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	notes, err := s.v.List()
