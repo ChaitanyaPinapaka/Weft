@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"weft/internal/event"
 	"weft/internal/index"
 	"weft/internal/surface"
 	"weft/internal/vault"
@@ -594,6 +595,48 @@ func TestNewNoteHandler(t *testing.T) {
 	}
 	if code, _ := create("title="); code != http.StatusBadRequest {
 		t.Fatalf("empty title: want 400, got %d", code)
+	}
+}
+
+// TestIngestHandler: a POST envelope durably records an event + content-addressed
+// payload, returns the eid; missing source/kind is a 400.
+func TestIngestHandler(t *testing.T) {
+	v, err := vault.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := event.NewStore(v, "test-device")
+	h := ingestHandler(st)
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/ingest", strings.NewReader(body))
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+
+	rr := post(`{"source":"gmail","kind":"order.shipped","dedup_key":"ups-123","payload":"{\"carrier\":\"UPS\"}"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ingest: want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		EID        string `json:"eid"`
+		PayloadRef string `json:"payload_ref"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.EID == "" {
+		t.Fatal("ingest must return an eid")
+	}
+	if resp.PayloadRef != event.Digest([]byte(`{"carrier":"UPS"}`)) {
+		t.Fatalf("payload_ref must be the payload digest, got %q", resp.PayloadRef)
+	}
+	if blob, err := st.GetBlob(resp.PayloadRef); err != nil || string(blob) != `{"carrier":"UPS"}` {
+		t.Fatalf("payload not durably stored: %v", err)
+	}
+
+	if rr := post(`{"kind":"x"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing source: want 400, got %d", rr.Code)
 	}
 }
 

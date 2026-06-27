@@ -25,6 +25,7 @@ import (
 
 	"weft/internal/clip"
 	"weft/internal/embed"
+	"weft/internal/event"
 	"weft/internal/graph"
 	"weft/internal/index"
 	"weft/internal/noteid"
@@ -83,6 +84,11 @@ func Run(vaultPath string) error {
 	startAmbientSurfacer(hub, v, ix, ps)
 	startLearnedEdgeDecayer(ix)
 
+	// Capture substrate: the append-only event log + content-addressed blob store
+	// every ingestion adapter writes into. The derived graph is rebuilt from it
+	// (P2); this log is the source of truth ("completeness in the store").
+	evStore := event.NewStore(v, deviceID())
+
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
 	// the default state is writing, not browsing (HANDOFF: "Daily note as home").
@@ -101,6 +107,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/surface/stream", surfaceStreamHandler(hub))
 	mux.HandleFunc("GET /api/surface/{path...}", surfaceHandler(v, ix, emb, ps))
 	mux.HandleFunc("POST /api/surface/click", surfaceClickHandler(ix))
+	mux.HandleFunc("POST /api/ingest", ingestHandler(evStore))
 	// Short-lived trash tombstones block a queued save from resurrecting a note
 	// the user just removed (shared by save + trash).
 	tomb := newTrashTombstones()
@@ -569,6 +576,59 @@ func uniqueNotePath(v *vault.Vault, slug string) string {
 		}
 	}
 	return base
+}
+
+// ingestHandler is the single entry point every ingestion adapter (email,
+// calendar, sensor, on-device, or an integration platform's webhook) POSTs to.
+// Body is JSON {source, kind, occurred_at?, dedup_key?, schema?, device?,
+// payload?}; payload is an optional raw string stored as a content-addressed
+// blob. It returns {eid, payload_ref} only AFTER the event is durable
+// (ack-after-durable), so a caller that gets 200 can safely 200 its webhook /
+// advance its cursor. The canonical envelope is the whole integration contract:
+// adapters become config elsewhere, not Go code here.
+func ingestHandler(st *event.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Source     string `json:"source"`
+			Kind       string `json:"kind"`
+			OccurredAt int64  `json:"occurred_at"`
+			DedupKey   string `json:"dedup_key"`
+			Schema     string `json:"schema"`
+			Device     string `json:"device"`
+			Payload    string `json:"payload"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20)).Decode(&body); err != nil {
+			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var payload []byte
+		if body.Payload != "" {
+			payload = []byte(body.Payload)
+		}
+		env, err := st.Append(event.Envelope{
+			Source:     body.Source,
+			Kind:       body.Kind,
+			OccurredAt: body.OccurredAt,
+			DedupKey:   body.DedupKey,
+			Schema:     body.Schema,
+			Device:     body.Device,
+		}, payload)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"eid": env.EID, "payload_ref": env.PayloadRef})
+	}
+}
+
+// deviceID names this device on captured events. Hostname is a stable, adequate
+// placeholder until the sync layer's signed device identity is threaded through.
+func deviceID() string {
+	if h, err := os.Hostname(); err == nil && strings.TrimSpace(h) != "" {
+		return h
+	}
+	return "weft"
 }
 
 func tagHandler(ix *index.Index) http.HandlerFunc {
