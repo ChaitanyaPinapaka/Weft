@@ -24,6 +24,7 @@ import (
 	gohtml "golang.org/x/net/html"
 
 	"weft/internal/clip"
+	"weft/internal/derive"
 	"weft/internal/embed"
 	"weft/internal/event"
 	"weft/internal/graph"
@@ -88,6 +89,11 @@ func Run(vaultPath string) error {
 	// every ingestion adapter writes into. The derived graph is rebuilt from it
 	// (P2); this log is the source of truth ("completeness in the store").
 	evStore := event.NewStore(v, deviceID())
+	// Catch the derived graph up to the lake on startup (events captured offline,
+	// pulled via sync, or POSTed by adapters while the daemon was down).
+	if _, err := derive.Catchup(evStore, ix); err != nil {
+		fmt.Printf("startup: graph derive catchup: %v\n", err)
+	}
 
 	mux := http.NewServeMux()
 	// Home is today's daily note in the editor, cursor ready — capture-first,
@@ -789,6 +795,10 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *am
 				if _, err := evStore.Append(event.Envelope{Source: "capture", Kind: "capture.created"}, payload); err != nil {
 					fmt.Printf("capture: emit event: %v\n", err)
 				}
+			}
+			// Fold the new event into the context graph right away (low-freq path).
+			if _, err := derive.Catchup(evStore, ix); err != nil {
+				fmt.Printf("capture: graph derive: %v\n", err)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
