@@ -658,6 +658,28 @@ func TestCaptureEmitsEvent(t *testing.T) {
 	}
 }
 
+// TestLLMsText: /llms.txt serves a markdown capability manifest an agent can use
+// to discover Weft's MCP tools, endpoints, and model.
+func TestLLMsText(t *testing.T) {
+	v, ix := surfaceFixture(t)
+	h := llmsTextHandler(v, ix)
+	req := httptest.NewRequest(http.MethodGet, "/llms.txt", nil)
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("llms.txt: want 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/markdown") {
+		t.Fatalf("content-type: want text/markdown, got %q", ct)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"# Weft", "surface_note", "list_notes", "/api/ingest", "Surfacing over searching"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("llms.txt missing %q", want)
+		}
+	}
+}
+
 // TestIngestHandler: a POST envelope durably records an event + content-addressed
 // payload, returns the eid; missing source/kind is a 400.
 func TestIngestHandler(t *testing.T) {

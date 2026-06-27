@@ -110,6 +110,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /edit/{path...}", editRedirectHandler())
 	mux.HandleFunc("GET /daily", dailyRedirectHandler(v))
 	mux.HandleFunc("GET /api/notes", apiNotesHandler(v))
+	mux.HandleFunc("GET /llms.txt", llmsTextHandler(v, ix))
 	mux.HandleFunc("GET /api/search", searchHandler(ix))
 	// More specific than the {path...} wildcard below, so ServeMux routes the
 	// literal "stream" here instead of treating it as a note path.
@@ -535,6 +536,46 @@ func tasksHandler(ix *index.Index) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tasks)
+	}
+}
+
+// llmsTextHandler serves /llms.txt — the llms.txt-convention discovery manifest
+// (Jeremy Howard / Answer.AI) that lets an LLM agent discover what Weft exposes
+// and HOW to consume a person's context: the MCP tools, the key HTTP endpoints,
+// and the surfacing-over-search model. This is the Agent-Experience "Access +
+// Context" discovery seam — generated live so it stays accurate as the vault and
+// API evolve.
+func llmsTextHandler(v *vault.Vault, ix *index.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		count := 0
+		if notes, err := v.List(); err == nil {
+			count = len(notes)
+		}
+		var b strings.Builder
+		b.WriteString("# Weft — personal-context vault\n\n")
+		b.WriteString("> Weft is a local-first personal knowledge vault whose defining feature is surfacing, not searching: open any note and it returns what your brain would recall right now — backlinks, semantic neighbors, recently co-accessed notes, and \"this day in past years.\" It is built for an LLM agent to consume a person's evolving personal context.\n\n")
+		fmt.Fprintf(&b, "This vault currently holds %d notes. Notes are HTML files on disk; nothing is ever deleted (dormancy is a ranking signal, not removal).\n\n", count)
+		b.WriteString("## Consume Weft over MCP (preferred)\n\n")
+		b.WriteString("Run `weft mcp <vault>`; the server exposes these tools:\n\n")
+		b.WriteString("- `list_notes` — every note (path, title, mtime, size)\n")
+		b.WriteString("- `read_note` — full HTML of one note\n")
+		b.WriteString("- `search_notes` — FTS5 full-text search, BM25-ranked\n")
+		b.WriteString("- `surface_note` — the brain panel: explicit backlinks plus activation-ranked associative neighbors. Prefer this for recall — it returns what relates to a note, not just lexical matches.\n")
+		b.WriteString("- `write_note` — create or overwrite a note (HTML body)\n\n")
+		b.WriteString("## HTTP API (http://localhost:7777)\n\n")
+		b.WriteString("- `GET /api/notes` — note list (JSON)\n")
+		b.WriteString("- `GET /api/search?q=<query>` — full-text search\n")
+		b.WriteString("- `GET /api/surface/{path}` — backlinks + surfaced neighbors for a note\n")
+		b.WriteString("- `GET /raw/{path}` — raw note HTML\n")
+		b.WriteString("- `GET /api/tasks` — open tasks across the vault\n")
+		b.WriteString("- `POST /api/capture` — append a thought to today's daily note\n")
+		b.WriteString("- `POST /api/ingest` — append an event to the capture lake (the lossless substrate intake)\n\n")
+		b.WriteString("## Model\n\n")
+		b.WriteString("- **Surfacing over searching** — recall is cue-driven and associative (an ACT-R memory-activation model), not query-first.\n")
+		b.WriteString("- **Completeness in the store, tendedness in the view** — an append-only event lake is the source of truth; HTML notes are tended projections an agent and a human both read.\n")
+		b.WriteString("- **Local-first** — one Go binary, your files, optional E2EE bring-your-own-cloud sync.\n")
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Write([]byte(b.String()))
 	}
 }
 
