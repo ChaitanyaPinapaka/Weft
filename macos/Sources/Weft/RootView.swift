@@ -9,6 +9,7 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var showBrain = true
     @State private var showInbox = false
+    @State private var showTasks = false
     // Bumped each time the graph is shown so its WKWebView is rebuilt and reloads
     // /web/graph.html fresh — always reflecting the daemon's latest payload.
     @State private var graphReload = 0
@@ -23,7 +24,7 @@ struct RootView: View {
                     BrainPanel(
                         surface: model.surface,
                         titleFor: { model.titleFor($0) },
-                        onOpen: { model.open(path: $0) }
+                        onOpen: { model.followSurfaced(path: $0) }
                     )
                     .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
                 }
@@ -107,6 +108,7 @@ struct RootView: View {
         ToolbarItem(placement: .automatic) { editButton }
         ToolbarItem(placement: .automatic) { trashButton }
         ToolbarItem(placement: .automatic) { graphButton }
+        ToolbarItem(placement: .automatic) { tasksButton }
         ToolbarItem(placement: .automatic) { surfaceButton }
         ToolbarItem(placement: .automatic) {
             Button { showBrain.toggle() } label: {
@@ -142,6 +144,20 @@ struct RootView: View {
                 .foregroundStyle(model.showGraph ? Weft.accent : Color.primary)
         }
         .help(model.showGraph ? "Back to the note" : "Vault graph")
+    }
+
+    private var tasksButton: some View {
+        Button { showTasks.toggle() } label: {
+            Image(systemName: "checklist")
+        }
+        .help("Open tasks across the vault")
+        .popover(isPresented: $showTasks, arrowEdge: .bottom) {
+            TasksWebView { path in
+                model.open(path: path)
+                showTasks = false
+            }
+            .frame(width: 380, height: 460)
+        }
     }
 
     private var surfaceButton: some View {

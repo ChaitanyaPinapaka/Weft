@@ -28,8 +28,22 @@ struct SidebarView: View {
                             ForEach(group.notes) { row($0) }
                         }
                     } else {
-                        sectionLabel("\(filtered.count) match\(filtered.count == 1 ? "" : "es")")
-                        ForEach(filtered) { row($0) }
+                        // Instant, offline-capable name matches first.
+                        if !filtered.isEmpty {
+                            sectionLabel("notes · \(filtered.count)")
+                            ForEach(filtered) { row($0) }
+                        }
+                        // Then full-text (FTS5) matches from the daemon, minus any
+                        // already shown as a name match.
+                        let named = Set(filtered.map(\.path))
+                        let fts = model.searchHits.filter { !named.contains($0.path) }
+                        if !fts.isEmpty {
+                            sectionLabel("full-text · \(fts.count)")
+                            ForEach(fts) { searchRow($0) }
+                        }
+                        if filtered.isEmpty && model.searchHits.isEmpty {
+                            sectionLabel("no matches")
+                        }
                     }
                 }
                 .padding(8)
@@ -57,10 +71,11 @@ struct SidebarView: View {
             HStack(spacing: 5) {
                 Image(systemName: "line.3.horizontal.decrease")
                     .font(.system(size: 10)).foregroundStyle(Weft.muted)
-                TextField("filter", text: $query)
+                TextField("search", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .frame(width: 90)
+                    .onChange(of: query) { _, q in model.search(q) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background(RoundedRectangle(cornerRadius: 5).fill(Weft.surface))
@@ -89,6 +104,26 @@ struct SidebarView: View {
                 model.requestTrash(note.path)
             }
         }
+    }
+
+    private func searchRow(_ hit: SearchHit) -> some View {
+        Button { model.open(path: hit.path) } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hit.title.isEmpty ? hit.path : hit.title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Weft.text)
+                    .lineLimit(1)
+                if !hit.snippet.isEmpty {
+                    Text(hit.snippet)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Weft.muted)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
     }
 
     private func sectionLabel(_ text: String) -> some View {

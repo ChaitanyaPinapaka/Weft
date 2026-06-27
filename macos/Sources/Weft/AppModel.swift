@@ -29,6 +29,9 @@ final class AppModel {
     // that note, which drops back to the reader (open(path:) clears this).
     var showGraph = false
 
+    // Full-text (FTS5) search results for the sidebar; empty when the query is blank.
+    var searchHits: [SearchHit] = []
+
     // Path staged for trashing; RootView's confirm alert completes or cancels.
     var pendingTrash: String?
 
@@ -58,6 +61,7 @@ final class AppModel {
     private let client = WeftClient()
     private var stream: SurfaceStream?
     private var toastDismiss: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
 
     // MARK: - Lifecycle
 
@@ -138,6 +142,16 @@ final class AppModel {
         loadInto(path: path)
     }
 
+    /// Open a note the user picked from the brain panel, logging the followed
+    /// association so the reinforcement loop learns which surfaced connections
+    /// earn attention. Web parity: the viewer's POST /api/surface/click.
+    func followSurfaced(path: String) {
+        if let from = currentPath, from != path {
+            Task { await client.logSurfaceClick(from: from, to: path) }
+        }
+        open(path: path)
+    }
+
     /// Tear down to the reader and load `path`. Assumes any prior edit was already
     /// flushed by the caller.
     private func loadInto(path: String) {
@@ -178,6 +192,20 @@ final class AppModel {
     func titleFor(_ path: String) -> String {
         notes.first { $0.path == path }?.title
             ?? (path as NSString).lastPathComponent.replacingOccurrences(of: ".html", with: "")
+    }
+
+    // MARK: - Search
+
+    /// Run server-side full-text (FTS5) search for the sidebar. Cancels the prior
+    /// in-flight query (a cheap debounce); a blank query clears results.
+    func search(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchTask?.cancel()
+        guard !q.isEmpty else { searchHits = []; return }
+        searchTask = Task {
+            let hits = (try? await client.search(q)) ?? []
+            if !Task.isCancelled { searchHits = hits }
+        }
     }
 
     // MARK: - Editing

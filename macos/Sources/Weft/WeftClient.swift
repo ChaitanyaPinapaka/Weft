@@ -61,6 +61,25 @@ struct WeftClient {
         return try JSONDecoder().decode(PathReply.self, from: data).path
     }
 
+    /// Full-text (FTS5) search across the vault.
+    func search(_ query: String) async throws -> [SearchHit] {
+        let url = Self.base.appending(path: "api/search")
+            .appending(queryItems: [URLQueryItem(name: "q", value: query)])
+        let (data, _) = try await session.data(from: url)
+        return try JSONDecoder().decode([SearchHit].self, from: data)
+    }
+
+    /// Fire-and-forget reinforcement: the user followed a surfaced association,
+    /// so strengthen the from→to edge. Mirrors the web viewer's surface-click.
+    func logSurfaceClick(from: String, to: String) async {
+        guard !from.isEmpty, !to.isEmpty, from != to else { return }
+        var req = URLRequest(url: Self.base.appending(path: "api/surface/click"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["from": from, "to": to])
+        _ = try? await session.data(for: req)
+    }
+
     static var streamURL: URL { base.appending(path: "api/surface/stream") }
 
     private struct PathReply: Codable { let path: String }
@@ -147,6 +166,18 @@ struct WeftClient {
             let msg = decoded?.error ?? "HTTP \(http.statusCode)"
             throw PairingFailure(status: http.statusCode, message: msg, inFlight: decoded?.in_flight)
         }
+    }
+}
+
+/// A full-text search hit from GET /api/search. The daemon encodes Go's
+/// index.Hit with capitalized keys.
+struct SearchHit: Decodable, Identifiable, Hashable {
+    let path: String
+    let title: String
+    let snippet: String
+    var id: String { path }
+    enum CodingKeys: String, CodingKey {
+        case path = "Path", title = "Title", snippet = "Snippet"
     }
 }
 
