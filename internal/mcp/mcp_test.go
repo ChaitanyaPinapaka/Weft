@@ -173,8 +173,9 @@ func TestGround(t *testing.T) {
 	if !hasMatch {
 		t.Fatal("ground bundle should contain a lexical match")
 	}
-	if r2, _ := s.handleGround(context.Background(), callRequest(map[string]any{"intent": "  "})); !r2.IsError {
-		t.Fatal("empty intent must error")
+	r2, _ := s.handleGround(context.Background(), callRequest(map[string]any{"intent": "  "}))
+	if !r2.IsError || !strings.Contains(resultErrorMessage(t, r2), "bad_request") {
+		t.Fatal("empty intent must return a structured bad_request error")
 	}
 }
 

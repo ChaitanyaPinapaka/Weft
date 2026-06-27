@@ -190,7 +190,7 @@ func (s *Server) handleGround(_ context.Context, req mcplib.CallToolRequest) (*m
 	}
 	intent = strings.TrimSpace(intent)
 	if intent == "" {
-		return mcplib.NewToolResultError("empty intent"), nil
+		return toolErr("bad_request", "empty intent"), nil
 	}
 	limit := intArg(req, "limit", 8)
 
@@ -273,7 +273,7 @@ func (s *Server) handleReadNote(_ context.Context, req mcplib.CallToolRequest) (
 	}
 	rel = ensureHTMLSuffix(rel)
 	if !s.v.Exists(rel) {
-		return mcplib.NewToolResultError("note not found: " + rel), nil
+		return toolErr("not_found", "note not found: "+rel), nil
 	}
 	body, err := s.v.Read(rel)
 	if err != nil {
@@ -311,7 +311,7 @@ func (s *Server) handleSearchNotes(_ context.Context, req mcplib.CallToolRequest
 	}
 	q = strings.TrimSpace(q)
 	if q == "" {
-		return mcplib.NewToolResultError("empty query"), nil
+		return toolErr("bad_request", "empty query"), nil
 	}
 	limit := intArg(req, "limit", 20)
 	hits, err := s.ix.Search(q, limit)
@@ -457,6 +457,15 @@ func ensureHTMLSuffix(rel string) string {
 		return rel + ".html"
 	}
 	return rel
+}
+
+// toolErr returns a structured, machine-parseable error result — {code, error} —
+// so an agent can branch on the failure mode ("not_found" → try another path;
+// "bad_request" → fix the input) instead of parsing a prose string. Still a
+// normal MCP error result (IsError=true).
+func toolErr(code, message string) *mcplib.CallToolResult {
+	b, _ := json.Marshal(map[string]string{"code": code, "error": message})
+	return mcplib.NewToolResultError(string(b))
 }
 
 func jsonResult(v any) (*mcplib.CallToolResult, error) {
