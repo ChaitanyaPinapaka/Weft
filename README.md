@@ -34,9 +34,18 @@ Override the onnxruntime path with `WEFT_ONNXRUNTIME_LIB=/path/to/libonnxruntime
 
 ```sh
 weft serve ~/notes          # start daemon, open browser at localhost:7777
-weft capture "quick note"   # capture to today's daily note  (v0.2)
-weft clip https://...       # clip a URL to vault             (v0.2)
+weft capture "quick note"   # capture to today's daily note
+weft clip https://...       # clip a URL to vault
+weft weave                  # propose wikilinks between unlinked-but-similar notes
+weft import <kind> <src>    # import markdown / notion / bookmarks / apple-notes
+weft mcp ~/notes            # MCP server on stdio (for Claude Code)
+weft sync ...               # E2EE multi-device sync via your own cloud (R2/S3/B2)
 ```
+
+In the desktop editor (`localhost:7777`): a ⌘K command palette, a cross-vault
+open-tasks view with clickable checkboxes, brain-panel hover previews, and
+*runnable notes* — a self-authored note tagged `<meta name="weft-runnable">`
+runs its own JS in a sandboxed iframe.
 
 ## Native apps
 
@@ -102,12 +111,15 @@ A vault is any folder of `.html` files. Sub-folders allowed. Nothing is ever del
 
 | Version | What ships |
 |---------|-----------|
-| v0.1    | Vault browser + HTTP daemon (this) |
-| v0.2    | SQLite index, FTS5 search, backlinks, brain panel |
-| v0.3    | TipTap editor, `[[wikilinks]]`, daily note auto-create |
-| v0.4    | Browser extension (web clipper + brain panel sidebar) |
-| v0.5    | CLI MCP server for Claude Code |
-| v0.6    | Mobile (capture + read) |
+| v0.1    | Vault browser + HTTP daemon ✓ |
+| v0.2    | SQLite index, FTS5 search, backlinks, brain panel ✓ |
+| v0.3    | TipTap editor, `[[wikilinks]]`, daily note auto-create ✓ |
+| v0.4    | Browser extension (web clipper + brain panel sidebar) ✓ |
+| v0.5    | MCP server for Claude Code ✓ |
+| v0.6    | Mobile (capture + read) ✓ |
+| v0.7+   | E2EE BYOC sync, native macOS + iOS apps ✓ |
+| —       | Tasks, runnable artifacts, ⌘K palette, the Weaver, reinforcement-learned surfacing ✓ |
+| next    | Personal-context datalake: an append-only event-log substrate deriving a context graph any LLM can consume |
 
 ## Design
 
@@ -115,6 +127,6 @@ A vault is any folder of `.html` files. Sub-folders allowed. Nothing is ever del
 - Notes persist forever. Dormancy is a ranking signal, not an existential one.
 - Surfacing is the primary interface. Search is a fallback.
 - Single Go binary. No config files — everything interactive.
-- Single device at v0.1. Sync is a later problem.
+- Local-first. Optional E2EE multi-device sync via your own cloud (BYOC) — no Weft server.
 
 See `CLAUDE.md` for full architecture and working-with-agent conventions.
