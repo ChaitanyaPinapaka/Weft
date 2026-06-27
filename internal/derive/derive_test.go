@@ -85,6 +85,34 @@ func TestCatchupIsIdempotentAndIncremental(t *testing.T) {
 	}
 }
 
+func TestCatchupFoldsClipAndNote(t *testing.T) {
+	st, ix := setup(t)
+	clipP, _ := json.Marshal(map[string]string{"url": "https://x.com/a", "title": "A Post", "path": "clips/2026-06-27-a-post.html"})
+	if _, err := st.Append(event.Envelope{Source: "clip", Kind: "clip.created"}, clipP); err != nil {
+		t.Fatal(err)
+	}
+	noteP, _ := json.Marshal(map[string]string{"title": "My Idea", "path": "my-idea.html"})
+	if _, err := st.Append(event.Envelope{Source: "note", Kind: "note.created"}, noteP); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := Catchup(st, ix); err != nil || n != 2 {
+		t.Fatalf("Catchup: n=%d err=%v", n, err)
+	}
+
+	docs, _ := ix.NodesByKind("Document")
+	if len(docs) != 2 {
+		t.Fatalf("clip + note must each become a Document node, got %d", len(docs))
+	}
+	clipNode, err := ix.GetNode("doc:clips/2026-06-27-a-post.html")
+	if err != nil || clipNode.Props["source"] != "clip" || clipNode.Props["url"] != "https://x.com/a" {
+		t.Fatalf("clip Document node wrong: %+v %v", clipNode, err)
+	}
+	noteNode, err := ix.GetNode("doc:my-idea.html")
+	if err != nil || noteNode.Props["source"] != "note" || noteNode.Props["title"] != "My Idea" {
+		t.Fatalf("note Document node wrong: %+v %v", noteNode, err)
+	}
+}
+
 func TestCatchupSkipsUnknownKinds(t *testing.T) {
 	st, ix := setup(t)
 	if _, err := st.Append(event.Envelope{Source: "whoop", Kind: "sleep.recorded"}, nil); err != nil {

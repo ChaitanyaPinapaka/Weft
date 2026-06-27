@@ -570,7 +570,8 @@ func TestRunnableNoteHandler(t *testing.T) {
 // collision-suffixes; an empty title is rejected.
 func TestNewNoteHandler(t *testing.T) {
 	v, ix := surfaceFixture(t)
-	h := newNoteHandler(v, ix, nil)
+	st := event.NewStore(v, "test-device")
+	h := newNoteHandler(v, ix, nil, st)
 	create := func(query string) (int, string) {
 		req := httptest.NewRequest(http.MethodPost, "/api/note/new?"+query, nil)
 		rr := httptest.NewRecorder()
@@ -588,6 +589,17 @@ func TestNewNoteHandler(t *testing.T) {
 	}
 	if body, _ := v.Read(p); !strings.Contains(string(body), "<h1>My New Idea</h1>") {
 		t.Fatalf("title not in body: %s", body)
+	}
+	// Creating a note emits a note.created event into the lake (behind the scenes).
+	emitted := false
+	st.Replay("", func(e event.Envelope) error {
+		if e.Source == "note" && e.Kind == "note.created" {
+			emitted = true
+		}
+		return nil
+	})
+	if !emitted {
+		t.Fatal("new note must emit a note.created event into the lake")
 	}
 	// Same title again collision-suffixes rather than overwriting.
 	if _, p2 := create("title=My%20New%20Idea"); p2 != "my-new-idea-2.html" {

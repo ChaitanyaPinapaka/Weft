@@ -54,11 +54,7 @@ func fold(store *event.Store, ix *index.Index, e event.Envelope) error {
 			Text string `json:"text"`
 			Path string `json:"path"`
 		}
-		if e.PayloadRef != "" {
-			if blob, err := store.GetBlob(e.PayloadRef); err == nil {
-				_ = json.Unmarshal(blob, &p)
-			}
-		}
+		readPayload(store, e, &p)
 		ev := index.Node{ID: "event:" + e.EID, Kind: "Event", Props: map[string]any{
 			"text":        p.Text,
 			"source":      e.Source,
@@ -76,6 +72,43 @@ func fold(store *event.Store, ix *index.Index, e event.Envelope) error {
 				return err
 			}
 		}
+
+	case "clip.created":
+		var p struct {
+			URL   string `json:"url"`
+			Title string `json:"title"`
+			Path  string `json:"path"`
+		}
+		readPayload(store, e, &p)
+		if p.Path != "" {
+			return ix.UpsertNode(index.Node{ID: "doc:" + p.Path, Kind: "Document", Props: map[string]any{
+				"path": p.Path, "url": p.URL, "title": p.Title, "source": "clip", "created_at": e.OccurredAt,
+			}})
+		}
+
+	case "note.created":
+		var p struct {
+			Title string `json:"title"`
+			Path  string `json:"path"`
+		}
+		readPayload(store, e, &p)
+		if p.Path != "" {
+			return ix.UpsertNode(index.Node{ID: "doc:" + p.Path, Kind: "Document", Props: map[string]any{
+				"path": p.Path, "title": p.Title, "source": "note", "created_at": e.OccurredAt,
+			}})
+		}
 	}
 	return nil
+}
+
+// readPayload decodes an event's content-addressed JSON payload into dst,
+// best-effort (a missing/garbled payload leaves dst zero-valued rather than
+// failing the fold).
+func readPayload(store *event.Store, e event.Envelope, dst any) {
+	if e.PayloadRef == "" {
+		return
+	}
+	if blob, err := store.GetBlob(e.PayloadRef); err == nil {
+		_ = json.Unmarshal(blob, dst)
+	}
 }

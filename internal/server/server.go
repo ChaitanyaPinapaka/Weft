@@ -117,7 +117,7 @@ func Run(vaultPath string) error {
 	// Short-lived trash tombstones block a queued save from resurrecting a note
 	// the user just removed (shared by save + trash).
 	tomb := newTrashTombstones()
-	mux.HandleFunc("POST /api/note/new", newNoteHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/note/new", newNoteHandler(v, ix, emb, evStore))
 	mux.HandleFunc("POST /api/note/{path...}", saveHandler(v, ix, emb, tomb))
 	mux.HandleFunc("DELETE /api/note/{path...}", trashHandler(v, ix, tomb))
 	mux.HandleFunc("POST /api/rename", renameHandler(v, ix, emb, hub))
@@ -125,7 +125,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/tags", tagsHandler(ix))
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.HandleFunc("GET /api/tasks", tasksHandler(ix))
-	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
+	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb, evStore))
 	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub, evStore))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
@@ -538,7 +538,7 @@ func tasksHandler(ix *index.Index) http.HandlerFunc {
 // newNoteHandler creates a note from a title (slugified to {slug}.html at the
 // vault root, collision-suffixed so it never overwrites) and returns {path}.
 // Powers the command palette's quick-create; the title becomes the note's <h1>.
-func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		title := strings.TrimSpace(r.URL.Query().Get("title"))
 		if title == "" {
@@ -563,6 +563,10 @@ func newNoteHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Ha
 			fmt.Printf("new note: index upsert %s: %v\n", rel, err)
 		}
 		updateEmbedding(ix, emb, rel, t+"\n"+b)
+		// Creating a note silently becomes a graph Document, behind the scenes.
+		if payload, err := json.Marshal(map[string]string{"title": title, "path": rel}); err == nil {
+			recordEvent(evStore, ix, event.Envelope{Source: "note", Kind: "note.created"}, payload)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}
@@ -628,6 +632,24 @@ func ingestHandler(st *event.Store) http.HandlerFunc {
 	}
 }
 
+// recordEvent is the one helper every "behind-the-scenes" producer uses: append
+// an event to the lake, then fold it into the context graph. Best-effort and
+// nil-safe — a save/capture/clip is never blocked or failed by lake bookkeeping;
+// failures are logged and heal on the next catch-up. This is how saving anything
+// to Weft silently becomes graph.
+func recordEvent(evStore *event.Store, ix *index.Index, env event.Envelope, payload []byte) {
+	if evStore == nil {
+		return
+	}
+	if _, err := evStore.Append(env, payload); err != nil {
+		fmt.Printf("event: append %s/%s: %v\n", env.Source, env.Kind, err)
+		return
+	}
+	if _, err := derive.Catchup(evStore, ix); err != nil {
+		fmt.Printf("event: derive after %s: %v\n", env.Kind, err)
+	}
+}
+
 // deviceID names this device on captured events. Hostname is a stable, adequate
 // placeholder until the sync layer's signed device identity is threaded through.
 func deviceID() string {
@@ -657,7 +679,7 @@ func tagHandler(ix *index.Index) http.HandlerFunc {
 // clipHandler accepts `POST /api/clip` with `{url, html, title}` (title is
 // optional and used as a slug hint; clip.Clean derives one if absent).
 // Browser extension is the primary caller.
-func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.HandlerFunc {
+func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, evStore *event.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			URL   string `json:"url"`
@@ -698,6 +720,10 @@ func clipHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder) http.Handl
 			Size:    int64(len(cleaned)),
 		})
 		updateEmbedding(ix, emb, rel, t+"\n"+txt)
+		// Saving a clip silently becomes a graph Document, behind the scenes.
+		if payload, err := json.Marshal(map[string]string{"url": body.URL, "title": t, "path": rel}); err == nil {
+			recordEvent(evStore, ix, event.Envelope{Source: "clip", Kind: "clip.created"}, payload)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}
@@ -790,16 +816,8 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *am
 		// Land the capture in the datalake as an event — the lake's first live
 		// producer. Best-effort: a capture is never blocked by lake bookkeeping.
 		// Payload (text + target note path) is content-addressed.
-		if evStore != nil {
-			if payload, err := json.Marshal(map[string]string{"text": body.Text, "path": rel}); err == nil {
-				if _, err := evStore.Append(event.Envelope{Source: "capture", Kind: "capture.created"}, payload); err != nil {
-					fmt.Printf("capture: emit event: %v\n", err)
-				}
-			}
-			// Fold the new event into the context graph right away (low-freq path).
-			if _, err := derive.Catchup(evStore, ix); err != nil {
-				fmt.Printf("capture: graph derive: %v\n", err)
-			}
+		if payload, err := json.Marshal(map[string]string{"text": body.Text, "path": rel}); err == nil {
+			recordEvent(evStore, ix, event.Envelope{Source: "capture", Kind: "capture.created"}, payload)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
