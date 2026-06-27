@@ -99,6 +99,49 @@ func TestEIDTimeSortable(t *testing.T) {
 	}
 }
 
+func TestReplay(t *testing.T) {
+	s := newStore(t)
+	base := time.Date(2026, 6, 27, 9, 0, 0, 0, time.UTC)
+	mk := func(i int, source string) Envelope {
+		s.now = func() time.Time { return base.Add(time.Duration(i) * time.Second) }
+		env, err := s.Append(Envelope{Source: source, Kind: "x"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env
+	}
+	a := mk(0, "note")
+	b := mk(1, "gmail") // different source → exercises cross-source chronological order
+	c := mk(2, "note")
+
+	var got []string
+	if err := s.Replay("", func(e Envelope) error { got = append(got, e.EID); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != a.EID || got[1] != b.EID || got[2] != c.EID {
+		t.Fatalf("replay must be in EID order across sources:\n got %v\nwant %v", got, []string{a.EID, b.EID, c.EID})
+	}
+
+	// Resume from b's cursor → only c.
+	var after []string
+	if err := s.Replay(b.EID, func(e Envelope) error { after = append(after, e.EID); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0] != c.EID {
+		t.Fatalf("resume from cursor failed: %v", after)
+	}
+
+	// A fresh lake (no events dir) replays nothing, without error.
+	s2 := newStore(t)
+	n := 0
+	if err := s2.Replay("", func(Envelope) error { n++; return nil }); err != nil {
+		t.Fatalf("empty replay errored: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty lake should replay nothing, got %d", n)
+	}
+}
+
 func TestAppendRequiresSourceAndKind(t *testing.T) {
 	s := newStore(t)
 	if _, err := s.Append(Envelope{Kind: "x"}, nil); err == nil {

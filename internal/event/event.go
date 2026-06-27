@@ -23,6 +23,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +122,63 @@ func (s *Store) Append(env Envelope, payload []byte) (Envelope, error) {
 		return Envelope{}, err
 	}
 	return env, nil
+}
+
+// Replay calls fn for every event with EID strictly greater than sinceEID, in
+// ascending-EID (chronological) order — the deterministic fold the derived graph
+// is rebuilt from, and the read path the consumption layer assembles context
+// from. Pass "" to replay the whole lake; pass a stored cursor to resume. A
+// missing events dir replays nothing. fn returning an error stops the replay.
+//
+// Files are ordered by EID (the filename base), not by directory, so events
+// interleave chronologically across sources. Each file may hold one or more
+// NDJSON lines (batching is forward-compatible); lines are read in file order
+// and the per-line EID filter makes resume exact regardless of batching.
+func (s *Store) Replay(sinceEID string, fn func(Envelope) error) error {
+	root := filepath.Join(s.v.Root, "events")
+	var files []string
+	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fs.SkipAll // no events captured yet
+			}
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ".ndjson") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	// Order by filename base (the EID), so chronology holds across source dirs.
+	sort.Slice(files, func(i, j int) bool {
+		return filepath.Base(files[i]) < filepath.Base(files[j])
+	})
+	for _, p := range files {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var env Envelope
+			if err := json.Unmarshal([]byte(line), &env); err != nil {
+				return fmt.Errorf("event: corrupt line in %s: %w", p, err)
+			}
+			if env.EID <= sinceEID {
+				continue
+			}
+			if err := fn(env); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Digest returns the lowercase hex SHA-256 of content — the content address.
