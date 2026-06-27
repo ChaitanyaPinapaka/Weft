@@ -120,7 +120,7 @@ func Run(vaultPath string) error {
 	mux.HandleFunc("GET /api/tags/{tag}", tagHandler(ix))
 	mux.HandleFunc("GET /api/tasks", tasksHandler(ix))
 	mux.HandleFunc("POST /api/clip", clipHandler(v, ix, emb))
-	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub))
+	mux.HandleFunc("POST /api/capture", captureHandler(v, ix, emb, hub, evStore))
 	mux.HandleFunc("GET /api/graph", graphHandler(v, ix))
 	mux.HandleFunc("GET /graph", graphRedirectHandler())
 	mux.HandleFunc("GET /api/params", getParamsHandler(ps))
@@ -738,7 +738,7 @@ func graphRedirectHandler() http.HandlerFunc {
 
 // captureHandler accepts `POST /api/capture` with `{text}` and appends to
 // today's daily note (creating it if missing). Same engine as `weft capture`.
-func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub) http.HandlerFunc {
+func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *ambientHub, evStore *event.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
@@ -781,6 +781,16 @@ func captureHandler(v *vault.Vault, ix *index.Index, emb embed.Embedder, hub *am
 		// Tell any open editor/reader of this daily note to reload — the capture
 		// landed out of band and must not be clobbered by a stale autosave.
 		hub.changed(rel)
+		// Land the capture in the datalake as an event — the lake's first live
+		// producer. Best-effort: a capture is never blocked by lake bookkeeping.
+		// Payload (text + target note path) is content-addressed.
+		if evStore != nil {
+			if payload, err := json.Marshal(map[string]string{"text": body.Text, "path": rel}); err == nil {
+				if _, err := evStore.Append(event.Envelope{Source: "capture", Kind: "capture.created"}, payload); err != nil {
+					fmt.Printf("capture: emit event: %v\n", err)
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"path": rel})
 	}

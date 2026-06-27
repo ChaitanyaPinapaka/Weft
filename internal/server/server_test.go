@@ -598,6 +598,54 @@ func TestNewNoteHandler(t *testing.T) {
 	}
 }
 
+// TestCaptureEmitsEvent: a quick-capture lands in the datalake as a
+// capture.created event whose content-addressed payload holds the text + path.
+func TestCaptureEmitsEvent(t *testing.T) {
+	v, err := vault.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix, err := index.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	st := event.NewStore(v, "test-device")
+	h := captureHandler(v, ix, nil, newAmbientHub(), st)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/capture", strings.NewReader(`{"text":"remember the milk"}`))
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("capture: want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	var found *event.Envelope
+	if err := st.Replay("", func(e event.Envelope) error {
+		if e.Source == "capture" && e.Kind == "capture.created" {
+			ec := e
+			found = &ec
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if found == nil {
+		t.Fatal("capture must emit a capture.created event into the lake")
+	}
+	blob, err := st.GetBlob(found.PayloadRef)
+	if err != nil {
+		t.Fatalf("capture event payload not durably stored: %v", err)
+	}
+	var p struct{ Text, Path string }
+	if err := json.Unmarshal(blob, &p); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if p.Text != "remember the milk" || p.Path == "" {
+		t.Fatalf("capture payload wrong: %+v", p)
+	}
+}
+
 // TestIngestHandler: a POST envelope durably records an event + content-addressed
 // payload, returns the eid; missing source/kind is a 400.
 func TestIngestHandler(t *testing.T) {
