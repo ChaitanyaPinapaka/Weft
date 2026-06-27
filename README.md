@@ -117,9 +117,9 @@ A vault is any folder of `.html` files. Sub-folders allowed. Nothing is ever del
 | v0.4    | Browser extension (web clipper + brain panel sidebar) ✓ |
 | v0.5    | MCP server for Claude Code ✓ |
 | v0.6    | Mobile (capture + read) ✓ |
-| v0.7+   | E2EE BYOC sync, native macOS + iOS apps ✓ |
-| —       | Tasks, runnable artifacts, ⌘K palette, the Weaver, reinforcement-learned surfacing ✓ |
-| next    | Personal-context datalake: an append-only event-log substrate deriving a context graph any LLM can consume |
+| v0.7    | E2EE BYOC sync, native macOS + iOS apps ✓ |
+| v0.8    | Tasks, runnable artifacts, ⌘K palette, the Weaver, reinforcement-learned surfacing ✓ |
+| v0.9    | Personal-context datalake → context graph any LLM can consume — *in progress* |
 
 ## Design
 

@@ -12,6 +12,7 @@ Every command the `weft` binary exposes. This is the authoritative reference; wh
 | `weft serve <vault-path>` | Start the daemon and open the browser (http://localhost:7777) |
 | `weft capture "<text>"` | Quick-capture to today's daily note |
 | `weft clip <url>` | Clip a URL to the vault as `clips/YYYY-MM-DD-slug.html` |
+| `weft weave` | Propose wikilinks between unlinked-but-similar notes (writes a dated digest) |
 | `weft mcp <vault-path>` | Run the MCP server on stdio (for Claude Code) |
 | `weft import <kind> <src>` | Import notes; kinds: `markdown` `notion` `bookmarks` `apple-notes` |
 | `weft sync init` | Set up E2EE multi-device sync on your own cloud |
@@ -46,6 +47,14 @@ Fetch a web page and save it to the vault as `clips/YYYY-MM-DD-slug.html`. Becau
 
 ```sh
 weft clip https://example.com/some-article
+```
+
+## weave
+
+Scan the vault for pairs of notes that are semantically close but not yet linked, and write the proposals to a dated digest at `digests/YYYY-MM-DD.html`. The vault tends itself: open the digest and add a `[[wikilink]]` where the connection is real. Idempotent and never destructive — it only writes the digest, never edits your notes. Needs local embeddings (`make build-ort`) to compute similarity.
+
+```sh
+weft weave
 ```
 
 ## mcp

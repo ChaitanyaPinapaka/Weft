@@ -53,6 +53,13 @@ The result is a list that reflects both how memorable a note is on its own and h
 The brain panel has an **explain** toggle: turn it on and each surfaced note shows the signals that put it there — the backlink, the similarity, the co-access, the date. A separate tuning page lets you adjust the weights behind the model if the defaults do not match how you think.
 :::
 
+## The model learns from you
+
+Surfacing is not static. Two loops keep it tuned to how you actually think:
+
+- **Reinforcement.** Follow a surfaced suggestion and that association strengthens; one you keep ignoring decays back to neutral. The panel learns which connections earn your attention — from your own clicks, not a fixed weighting.
+- **The Weaver.** A pass (`weft weave`) scans for notes that are semantically close but never linked and writes the pairs to a dated digest as proposed `[[wikilinks]]`. The vault tends itself: you confirm the connections that are real, it never edits your notes.
+
 ## The graph: the same model, seen whole
 
 The brain panel shows associations one note at a time. The **graph view** shows them all at once — a map of the vault that draws on the same signals. Each note is a node; the layout is the shape of how your notes connect.
