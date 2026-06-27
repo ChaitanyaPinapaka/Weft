@@ -1,7 +1,7 @@
 // Package mcp exposes the Weft vault to MCP clients (Claude Code, etc.) over
-// stdio. Six tools are registered: describe_vault (capability discovery),
-// list_notes, read_note, write_note, search_notes, surface_note. The transport
-// is JSON-RPC over stdin/stdout —
+// stdio. Seven tools are registered: describe_vault (capability discovery),
+// ground (token-budgeted context bundle), list_notes, read_note, write_note,
+// search_notes, surface_note. The transport is JSON-RPC over stdin/stdout —
 // any stray write to stdout corrupts the protocol, so this package logs only
 // to stderr.
 package mcp
@@ -129,6 +129,23 @@ func (s *Server) registerTools() {
 		),
 		s.handleSurfaceNote,
 	)
+
+	s.mcp.AddTool(
+		mcplib.NewTool("ground",
+			mcplib.WithDescription(
+				"Assemble a token-budgeted context bundle for an INTENT (a question or "+
+					"topic): lexical full-text matches PLUS associative neighbors of the top "+
+					"match, deduped, with a coverage signal. Use this as the FIRST call when "+
+					"you need relevant personal context for a task, then read_note the items "+
+					"you want. Returns {intent, items:[{path,title,snippet,reason}], coverage}."),
+			mcplib.WithString("intent",
+				mcplib.Required(),
+				mcplib.Description("The question or topic to ground in the vault.")),
+			mcplib.WithNumber("limit",
+				mcplib.Description("Max items in the bundle; defaults to 8.")),
+		),
+		s.handleGround,
+	)
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -143,6 +160,7 @@ func (s *Server) handleDescribeVault(_ context.Context, _ mcplib.CallToolRequest
 		"summary":    "A local-first personal-context vault. Recall is surfacing — associative and cue-driven — not just search.",
 		"note_count": len(notes),
 		"tools": []map[string]string{
+			{"name": "ground", "use": "FIRST call for a task: a token-budgeted bundle of context for an intent (lexical matches + associative neighbors + a coverage signal)"},
 			{"name": "list_notes", "use": "enumerate every note (path/title/mtime/size)"},
 			{"name": "read_note", "use": "read a note's full HTML by path"},
 			{"name": "search_notes", "use": "FTS5 full-text search, BM25-ranked"},
@@ -154,7 +172,80 @@ func (s *Server) handleDescribeVault(_ context.Context, _ mcplib.CallToolRequest
 			"retention": "notes are never deleted; dormancy lowers ranking, not retention",
 			"format":    "notes are HTML files on disk",
 		},
-		"how_to_consume": "Call describe_vault to orient, list_notes/search_notes to locate, surface_note to expand a note's associative neighborhood, write_note to persist durable findings.",
+		"how_to_consume": "Call describe_vault to orient, then ground(intent) for a task's context bundle (or list_notes/search_notes to locate, surface_note to expand a note). Persist durable findings with write_note.",
+	})
+}
+
+// handleGround assembles a token-budgeted context bundle for an intent: the
+// lexical (FTS) matches plus the associative neighbors of the top match, deduped
+// and capped, with a coverage signal. It is the recall-first "give me the
+// relevant context for this task" primitive — composing search + surface so an
+// agent makes one call instead of orchestrating both. The bundle carries
+// title/snippet/reason, not full bodies, keeping it within an agent's token
+// budget; the agent read_note's the items it actually needs.
+func (s *Server) handleGround(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	intent, err := stringArg(req, "intent")
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+	intent = strings.TrimSpace(intent)
+	if intent == "" {
+		return mcplib.NewToolResultError("empty intent"), nil
+	}
+	limit := intArg(req, "limit", 8)
+
+	type item struct {
+		Path    string  `json:"path"`
+		Title   string  `json:"title"`
+		Snippet string  `json:"snippet,omitempty"`
+		Reason  string  `json:"reason"`
+		Score   float64 `json:"score,omitempty"`
+	}
+	seen := map[string]bool{}
+	items := []item{}
+
+	hits, _ := s.ix.Search(intent, limit)
+	for _, h := range hits {
+		if seen[h.Path] {
+			continue
+		}
+		seen[h.Path] = true
+		items = append(items, item{Path: h.Path, Title: h.Title, Snippet: h.Snippet, Reason: "match", Score: h.Score})
+	}
+	// Associative expansion: pull the top match's surfaced neighbors so the bundle
+	// includes related context that doesn't lexically match — recall, not just
+	// precision. Capped at the item budget.
+	if len(hits) > 0 {
+		if res, err := buildSurface(s.v, s.ix, hits[0].Path, time.Now()); err == nil {
+			for _, sc := range res.Scored {
+				if len(items) >= limit || seen[sc.Path] || sc.Spread <= 0 {
+					continue
+				}
+				seen[sc.Path] = true
+				items = append(items, item{Path: sc.Path, Title: sc.Title, Reason: "related"})
+			}
+		}
+	}
+
+	// Coverage is a v0 heuristic, NOT a calibrated completeness measure (that is a
+	// later refinement): higher confidence when several lexical matches landed.
+	confidence := "low"
+	if len(hits) >= 1 {
+		confidence = "medium"
+	}
+	if len(hits) >= 3 {
+		confidence = "high"
+	}
+	return jsonResult(map[string]any{
+		"intent": intent,
+		"items":  items,
+		"coverage": map[string]any{
+			"retrieved":    len(items),
+			"lexical_hits": len(hits),
+			"confidence":   confidence,
+			"note":         "heuristic v0, not a calibrated completeness measure",
+		},
+		"how_to_use": "read_note the items you need; surface_note any item to expand its neighborhood further.",
 	})
 }
 

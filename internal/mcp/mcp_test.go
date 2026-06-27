@@ -141,6 +141,43 @@ func TestDescribeVault(t *testing.T) {
 	}
 }
 
+// TestGround: ground(intent) returns a context bundle with lexical matches and a
+// coverage signal; an empty intent errors.
+func TestGround(t *testing.T) {
+	v, ix := fixture(t)
+	s := New(v, ix)
+	res, err := s.handleGround(context.Background(), callRequest(map[string]any{"intent": "apples"}))
+	if err != nil {
+		t.Fatalf("handleGround: %v", err)
+	}
+	var out struct {
+		Intent string `json:"intent"`
+		Items  []struct {
+			Path   string `json:"path"`
+			Reason string `json:"reason"`
+		} `json:"items"`
+		Coverage struct {
+			LexicalHits int `json:"lexical_hits"`
+		} `json:"coverage"`
+	}
+	decodeResult(t, res, &out)
+	if out.Coverage.LexicalHits == 0 || len(out.Items) == 0 {
+		t.Fatalf("ground('apples') should find matches: %+v", out)
+	}
+	hasMatch := false
+	for _, it := range out.Items {
+		if it.Reason == "match" {
+			hasMatch = true
+		}
+	}
+	if !hasMatch {
+		t.Fatal("ground bundle should contain a lexical match")
+	}
+	if r2, _ := s.handleGround(context.Background(), callRequest(map[string]any{"intent": "  "})); !r2.IsError {
+		t.Fatal("empty intent must error")
+	}
+}
+
 // TestSurfaceCandidateBuilding verifies that linked notes (incoming or
 // outgoing) surface with a "backlink" reason from the ACT-R spreading term.
 // This is the slice of surface logic reimplemented in this package — worth a
