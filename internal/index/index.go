@@ -3,6 +3,7 @@ package index
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,6 +102,25 @@ CREATE TABLE IF NOT EXISTS learned_edges (
   PRIMARY KEY (src, dst)
 );
 CREATE INDEX IF NOT EXISTS learned_edges_src ON learned_edges(src);
+CREATE TABLE IF NOT EXISTS nodes (
+  node_id TEXT PRIMARY KEY,
+  kind    TEXT NOT NULL,
+  props   TEXT,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS nodes_kind ON nodes(kind);
+CREATE TABLE IF NOT EXISTS edges (
+  src        TEXT NOT NULL,
+  dst        TEXT NOT NULL,
+  rel        TEXT NOT NULL,
+  props      TEXT,
+  valid_from INTEGER NOT NULL DEFAULT 0,
+  valid_to   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (src, dst, rel)
+);
+CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
+CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 `
 
 func Open(vaultRoot string) (*Index, error) {
@@ -370,6 +390,153 @@ func (ix *Index) GetLearnedWeight(src, dst string) float64 {
 func (ix *Index) DecayOldEdges(before int64) error {
 	_, err := ix.db.Exec(`DELETE FROM learned_edges WHERE updated < ?`, before)
 	return err
+}
+
+// --- Context graph (derived from the event lake; rebuilt by replay) ----------
+
+// Node is one entity in the context graph. Kind is from the closed ontology
+// (Person, Place, Project, Skill, Document, Event, Device, Series); Props is an
+// open JSON bag so the schema extends without ALTER TABLE.
+type Node struct {
+	ID      string
+	Kind    string
+	Props   map[string]any
+	Created int64
+	Updated int64
+}
+
+// Edge is a typed, time-bounded relationship between two nodes. ValidTo == 0
+// means "currently valid" (a revision closes the old edge's valid-time and adds
+// a new one — nothing is overwritten).
+type Edge struct {
+	Src, Dst, Rel string
+	Props         map[string]any
+	ValidFrom     int64
+	ValidTo       int64
+}
+
+// UpsertNode inserts or updates a node by ID, preserving the original created
+// timestamp. Idempotent — re-deriving the same event yields the same node.
+func (ix *Index) UpsertNode(n Node) error {
+	props, err := marshalProps(n.Props)
+	if err != nil {
+		return err
+	}
+	if n.Updated == 0 {
+		n.Updated = time.Now().Unix()
+	}
+	if n.Created == 0 {
+		n.Created = n.Updated
+	}
+	_, err = ix.db.Exec(`
+		INSERT INTO nodes(node_id, kind, props, created, updated) VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(node_id) DO UPDATE SET kind=excluded.kind, props=excluded.props, updated=excluded.updated`,
+		n.ID, n.Kind, props, n.Created, n.Updated)
+	return err
+}
+
+// GetNode returns the node with the given id, or sql.ErrNoRows if absent.
+func (ix *Index) GetNode(id string) (Node, error) {
+	var n Node
+	var props sql.NullString
+	err := ix.db.QueryRow(`SELECT node_id, kind, props, created, updated FROM nodes WHERE node_id = ?`, id).
+		Scan(&n.ID, &n.Kind, &props, &n.Created, &n.Updated)
+	if err != nil {
+		return Node{}, err
+	}
+	n.Props = unmarshalProps(props.String)
+	return n, nil
+}
+
+// NodesByKind returns all nodes of a kind, newest-updated first.
+func (ix *Index) NodesByKind(kind string) ([]Node, error) {
+	rows, err := ix.db.Query(`SELECT node_id, kind, props, created, updated FROM nodes WHERE kind = ? ORDER BY updated DESC`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Node
+	for rows.Next() {
+		var n Node
+		var props sql.NullString
+		if err := rows.Scan(&n.ID, &n.Kind, &props, &n.Created, &n.Updated); err != nil {
+			return nil, err
+		}
+		n.Props = unmarshalProps(props.String)
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// UpsertEdge inserts or updates a (src,dst,rel) edge. Idempotent.
+func (ix *Index) UpsertEdge(e Edge) error {
+	props, err := marshalProps(e.Props)
+	if err != nil {
+		return err
+	}
+	_, err = ix.db.Exec(`
+		INSERT INTO edges(src, dst, rel, props, valid_from, valid_to) VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(src, dst, rel) DO UPDATE SET props=excluded.props, valid_from=excluded.valid_from, valid_to=excluded.valid_to`,
+		e.Src, e.Dst, e.Rel, props, e.ValidFrom, e.ValidTo)
+	return err
+}
+
+// EdgesFrom returns currently-valid (valid_to == 0) edges out of a node — the
+// one-hop neighborhood the brain panel and multi-hop CTE traversal build on.
+func (ix *Index) EdgesFrom(src string) ([]Edge, error) {
+	rows, err := ix.db.Query(`SELECT src, dst, rel, props, valid_from, valid_to FROM edges WHERE src = ? AND valid_to = 0`, src)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Edge
+	for rows.Next() {
+		var e Edge
+		var props sql.NullString
+		if err := rows.Scan(&e.Src, &e.Dst, &e.Rel, &props, &e.ValidFrom, &e.ValidTo); err != nil {
+			return nil, err
+		}
+		e.Props = unmarshalProps(props.String)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// IngestCursor returns the EID of the last event folded into the graph, or ""
+// if none — the resume point for incremental derivation.
+func (ix *Index) IngestCursor() (string, error) {
+	var v string
+	err := ix.db.QueryRow(`SELECT value FROM settings WHERE key = 'ingest_cursor'`).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetIngestCursor advances the derivation cursor to eid.
+func (ix *Index) SetIngestCursor(eid string) error {
+	_, err := ix.db.Exec(
+		`INSERT INTO settings(key, value) VALUES('ingest_cursor', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, eid)
+	return err
+}
+
+func marshalProps(p map[string]any) (string, error) {
+	if len(p) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(p)
+	return string(b), err
+}
+
+func unmarshalProps(s string) map[string]any {
+	if s == "" {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(s), &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // ftsMatchQuery turns a raw user query into a safe FTS5 MATCH expression.

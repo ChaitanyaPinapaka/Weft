@@ -152,6 +152,80 @@ func TestLearnedEdges(t *testing.T) {
 	}
 }
 
+func TestNodesAndEdges(t *testing.T) {
+	ix := newIndex(t)
+
+	// Upsert a node; round-trips with props.
+	if err := ix.UpsertNode(Node{ID: "ev-1", Kind: "Event", Props: map[string]any{"text": "ran 5k"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ix.GetNode("ev-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "Event" || got.Props["text"] != "ran 5k" || got.Created == 0 {
+		t.Fatalf("node round-trip wrong: %+v", got)
+	}
+	created := got.Created
+
+	// Re-upsert (idempotent): same id, created preserved, no duplicate.
+	if err := ix.UpsertNode(Node{ID: "ev-1", Kind: "Event", Props: map[string]any{"text": "ran 10k"}}); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := ix.GetNode("ev-1")
+	if again.Created != created {
+		t.Fatalf("created must be preserved across upsert: %d != %d", again.Created, created)
+	}
+	if again.Props["text"] != "ran 10k" {
+		t.Fatalf("props not updated: %+v", again.Props)
+	}
+	if all, _ := ix.NodesByKind("Event"); len(all) != 1 {
+		t.Fatalf("idempotent upsert must not duplicate, got %d", len(all))
+	}
+
+	// A daily Document node + a currently-valid edge from the event to it.
+	if err := ix.UpsertNode(Node{ID: "doc-daily", Kind: "Document"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.UpsertEdge(Edge{Src: "ev-1", Dst: "doc-daily", Rel: "references"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := ix.EdgesFrom("ev-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Dst != "doc-daily" || out[0].Rel != "references" {
+		t.Fatalf("edge round-trip wrong: %+v", out)
+	}
+
+	// A closed edge (valid_to != 0) is excluded from the live neighborhood.
+	if err := ix.UpsertEdge(Edge{Src: "ev-1", Dst: "doc-old", Rel: "references", ValidTo: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := ix.EdgesFrom("ev-1"); len(out) != 1 {
+		t.Fatalf("closed edges must be excluded from EdgesFrom, got %d", len(out))
+	}
+}
+
+func TestIngestCursor(t *testing.T) {
+	ix := newIndex(t)
+	if c, err := ix.IngestCursor(); err != nil || c != "" {
+		t.Fatalf("fresh cursor must be empty: %q %v", c, err)
+	}
+	if err := ix.SetIngestCursor("eid-42"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := ix.IngestCursor(); c != "eid-42" {
+		t.Fatalf("cursor not persisted: %q", c)
+	}
+	if err := ix.SetIngestCursor("eid-99"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := ix.IngestCursor(); c != "eid-99" {
+		t.Fatalf("cursor not advanced: %q", c)
+	}
+}
+
 func TestSearchHandlesFTSMetacharacters(t *testing.T) {
 	// Raw queries used to be passed straight to MATCH, so ordinary input with
 	// FTS5 operator chars raised a syntax error (surfaced as HTTP 500). These
